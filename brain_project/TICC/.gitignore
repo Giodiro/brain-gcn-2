@@ -1,0 +1,9 @@
+/**/*.pyc
+README.md
+UnitTest.py
+UnitTest_Data/
+example.py
+example_data.*
+paper code/
+potential.txt
+

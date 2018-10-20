@@ -1,0 +1,17 @@
+/DATA/
+*.npy
+logs_extended/
+logs/
+.DS_Store
+__pycache__
+subj_list
+nn/runs
+nn_old/
+siamese_gcn/__pycache__/
+siamese_gcn/runs/
+/validation_logs/
+DEPRECATED/
+reports/
+runs/
+.ipynb_checkpoints/plot_results_report-checkpoint.ipynb
+brain_project.code-workspace
