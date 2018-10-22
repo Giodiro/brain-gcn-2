@@ -1,13 +1,15 @@
 import numpy as np
+import os
 import math
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib as plt
+import matplotlib.pyplot as plt
 import sklearn
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from datetime import datetime
+from tensorboardX import SummaryWriter
 
 
 
@@ -41,7 +43,7 @@ def cluster_acc(Y_pred, Y):
     for i in range(Y_pred.size):
         w[Y_pred[i], Y[i]] += 1
     ind = linear_assignment(w.max() - w)
-    return sum([w[i,j] for i,j in ind])*1.0/Y_pred.size, w
+    return sum([w[i,j] for i,j in ind])*1.0 / Y_pred.size
 
 
 def build_network(layers, activation="relu", dropout=0):
@@ -59,8 +61,10 @@ def build_network(layers, activation="relu", dropout=0):
 
 
 class VaDE(nn.Module):
-    def __init__(self, input_dim, encoder_dims, z_dim, decoder_dims, n_centroids, no_cuda=False):
+    def __init__(self, input_dim, encoder_dims, z_dim, decoder_dims, n_centroids, name, no_cuda=False):
         super(VaDE, self).__init__()
+        self.name = name
+        self.log_path = "gen_data/logs/"
 
         ## Build the network
         self.encoder = build_network([input_dim] + encoder_dims, activation="relu", dropout=0.0)
@@ -89,6 +93,9 @@ class VaDE(nn.Module):
         use_cuda = torch.cuda.is_available() and not no_cuda
         self.device = "cuda" if use_cuda else "cpu"
         self.to(self.device)
+        
+        ## Initialize summary
+        self.summary = SummaryWriter(log_dir=os.path.join(self.log_path, self.name))
 
 
     def initialize_gmm(self, dataloader):
@@ -198,6 +205,7 @@ class VaDE(nn.Module):
         tot_loss = []; Y_pred = []; Y_true = []
 
         for batch_i, (inputs, labels) in enumerate(dataloader):
+            inputs = inputs.to(self.device)
             z, x_reconstructed, mu, logvar = self.forward(inputs)
             loss = self.loss(inputs, x_reconstructed, z, mu, logvar)
 
@@ -231,9 +239,9 @@ class VaDE(nn.Module):
 
         epoch_desc = "train" if is_training else "validation"
 
-        print((f"{time_str()} Epoch {self.epoch} - lr: {lr} - "
-               f"{epoch_desc} loss: {np.mean(tot_loss)} "
-               f"- accuracy: {cluster_acc(Y_pred, Y_true)}"))
+        print((f"{time_str()} Epoch {self.epoch} - lr: {lr:.4f} - "
+               f"{epoch_desc} loss: {np.mean(tot_loss):.5f} "
+               f"- accuracy: {cluster_acc(Y_pred, Y_true):.5f}"))
 
         # Write tensorboard summaries
         self.summary.add_scalar(f"loss/{epoch_desc}", np.mean(tot_loss), self.global_step)
@@ -264,6 +272,7 @@ class VaDE(nn.Module):
         for epoch in range(num_epochs):
             epoch_losses = []
             for batch_i, (inputs, labels) in enumerate(tr_loader):
+                inputs = inputs.to(self.device)
                 x_reconstructed = self.forward(inputs)
                 loss = self.autoencoder_loss(inputs, x_reconstructed)
                 epoch_losses.append(loss.data.cpu().numpy())

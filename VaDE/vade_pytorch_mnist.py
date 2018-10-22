@@ -34,9 +34,11 @@ test_loader = torch.utils.data.DataLoader(
     datasets.MNIST('....//data/mnist', train=False, transform=transform),
     batch_size=args.batch_size, shuffle=True, num_workers=2)
 
-vade = VaDE(input_dim=784, z_dim=10, n_centroids=10, encoder_dims=[500,500,2000], decoder_dims=[2000,500,500])
+model_name = "test"
 
-#vade.pretrain(num_epochs=10, tr_loader=train_loader)
+vade = VaDE(input_dim=784, z_dim=10, n_centroids=10, encoder_dims=[500,500,2000], decoder_dims=[2000,500,500], name=model_name)
+
+vade.pretrain(num_epochs=10, tr_loader=train_loader)
 vade.initialize_gmm(train_loader)
 
 vade.fit(args.epochs, train_loader, test_loader)
