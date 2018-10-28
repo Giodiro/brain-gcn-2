@@ -1,3 +1,10 @@
+import os, errno
+from datetime import datetime
+
+import numpy as np
+import torch
+import torch.nn as nn
+
 
 def encode_onehot(labels):
     classes = set(labels)
@@ -7,6 +14,33 @@ def encode_onehot(labels):
                              dtype=np.int32)
     return labels_onehot
 
+
+def time_str():
+    now = datetime.now()
+    return now.strftime("[%m-%d %H:%M:%S]")
+
+
+def safe_time_str():
+    now = datetime.now()
+    return now.strftime("%m.%d.%H.%M.%S")
+
+
+def list_to_safe_str(l):
+    return str(l).replace(" ", "") \
+                 .replace("[", "") \
+                 .replace("]", "") \
+                 .replace(",", ".")
+
+
+def mkdir_p(path):
+    """Recursively create directories."""
+    try:
+        os.makedirs(path)
+    except OSError as exc:  # Python >2.5
+        if exc.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else:
+            raise
 
 
 
@@ -23,7 +57,6 @@ def gumbel_softmax_sample(logits, tau=1, eps=1e-10):
     gumbel_noise = sample_gumbel(logits.size(), eps=eps).to(logits.device)
     y = logits + gumbel_noise
     return F.softmax(y / tau, dim=-1)
-
 
 
 def gumbel_softmax(logits, tau=1, hard=False, eps=1e-10):
@@ -66,7 +99,6 @@ def gumbel_softmax(logits, tau=1, hard=False, eps=1e-10):
         y = y_soft
 
     return y
-
 
 
 def kl_categorical(preds, log_prior, num_atoms, eps=1e-16):
