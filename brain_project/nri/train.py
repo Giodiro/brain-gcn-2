@@ -12,7 +12,7 @@ data_folder = "/scratch/gmeanti/..."
 subject_list = ["S01", "S02"]
 normalization = "none"
 num_atoms = 423
-num_timesteps = ?
+num_timesteps = 250
 
 # Batch size
 batch_size = 32
@@ -29,7 +29,7 @@ edge_types = len(prior)
 encoder_dropout = 0.0
 factor = True
 
-num_classes = ?
+num_classes = 6
 
 
 model_name = (f"NRIClassif{safe_time_str()}_enc{encoder_hidden}_"
@@ -40,7 +40,7 @@ model_name = (f"NRIClassif{safe_time_str()}_enc{encoder_hidden}_"
 
 subj_data = json.load(os.path.join(data_folder, "subj_data.json"))
 
-tr_indices, val_indices = cv_within_subj(subject_list, subj_data, ...) # TODO: implement
+tr_indices, val_indices = split_within_subj(subject_list, subj_data)
 
 tr_dataset = EEGDataset2(data_folder, tr_indices, subj_data, normalization)
 val_dataset = EEGDataset2(data_folder, val_indices, subj_data, normalization)
