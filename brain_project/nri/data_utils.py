@@ -5,7 +5,7 @@ import numpy as np
 import warnings
 import time
 
-from utils import mkdir_p, time_str
+from util import mkdir_p, time_str
 
 
 
