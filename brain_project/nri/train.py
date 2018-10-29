@@ -36,7 +36,7 @@ temp = 0.5
 hard = False
 
 # Batch size
-batch_size = 32
+batch_size = 4
 # Learning rate
 lr = 0.001
 # rate of exponential decay for the learning rate (applied each epoch)
@@ -99,6 +99,7 @@ encoder = MLPEncoder(num_timesteps,
                      edge_types,
                      encoder_dropout,
                      factor)
+encoder.to(device)
 next(encoder.parameters()).to(device)
 
 # Prior
@@ -116,6 +117,7 @@ decoder = MLPDecoder(n_in_node=num_atoms,
                      n_classes=num_classes,
                      dropout_prob=decoder_dropout)
 next(decoder.parameters()).to(device)
+encoder.to(device)
 
 # Training
 optimizer = optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=lr)
