@@ -255,7 +255,7 @@ class EEGDataset2(Dataset):
         iif = sdata["index_in_file"]
 
         X = self.xfile_cache.load(x_file, iif)
-        Y = self.yfile_cache.load(y_file, iif)
+        Y = self.yfile_cache.load(y_file, iif) - 1  # Necessary, targets must start from 0
 
         # TODO: Run normalization
 
