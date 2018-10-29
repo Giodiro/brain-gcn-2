@@ -24,27 +24,28 @@ if torch.cuda.is_available():
     device = "cuda"
 else:
     device = "cpu"
+#device = "cpu"
 
 orig_data_folder = "/nfs/nas12.ethz.ch/fs1201/infk_jbuhmann_project_leonhard/cardioml/"
-data_folder = "/cluster/home/gmeanti/cardioml/dataset2/subsample5_size250_batch32"
+data_folder = "/local/home/gmeanti/cardioml/dataset2/subsample5_size250_batch32"
 log_path = "gen_data/logs/"
 subject_list = ["S01", "S02"]
 normalization = "none"
 num_atoms = 423
 num_timesteps = 250
 
-temp = 0.5
-hard = True
+temp = 0.2
+hard = False
 
 # Batch size
-batch_size = 1
+batch_size = 2
 # Learning rate
 lr = 0.001
 # rate of exponential decay for the learning rate (applied each epoch)
 lr_decay = 0.7
 # Maximum number of epochs to run for
 num_epochs = 1000
-plot_interval = 5
+plot_interval = 2
 
 encoder_hidden = 128
 prior = np.array([0.92, 0.02, 0.02, 0.02, 0.02])
@@ -88,15 +89,9 @@ val_loader = data.DataLoader(val_dataset,
 
 # Generate off-diagonal interaction graph
 off_diag = np.ones([num_atoms, num_atoms]) - np.eye(num_atoms)
-rel_rec = to_sparse(torch.tensor(off_diag)).to(device)
-rel_send = rel_re
-rel_send = rel_recc
-#rel_rec = np.array(encode_onehot(np.where(off_diag)[1]), dtype=np.float32)
-#rel_send = np.array(encode_onehot(np.where(off_diag)[0]), dtype=np.float32)
-#rel_rec = (torch.tensor(rel_rec))
-#rel_send = (torch.tensor(rel_send))
-#rel_rec = to_sparse(rel_rec).to(device)
-#rel_send = to_sparse(rel_send).to(device)
+rel_rec = to_sparse(torch.tensor(off_diag.astype(np.float32)).to(device))
+rel_rec = rel_rec.to(device)
+rel_send = rel_rec
 
 # Encoder
 encoder = MLPEncoder(num_timesteps,
@@ -109,7 +104,7 @@ next(encoder.parameters()).to(device)
 
 # Prior
 assert sum(prior) == 1.0, "Edge prior doesn't sum to 1"
-log_prior = torch.tensor(np.log(prior)).to(device)
+log_prior = torch.tensor(np.log(prior)).float().to(device)
 log_prior = log_prior.unsqueeze(0).unsqueeze(0)
 
 # Decoder
@@ -118,11 +113,10 @@ decoder = MLPDecoder(n_in_node=num_atoms,
                      msg_hid=128,
                      msg_out=16,
                      n_hid=128,
-                     rnn_hid=128,
                      n_classes=num_classes,
                      dropout_prob=decoder_dropout)
 next(decoder.parameters()).to(device)
-encoder.to(device)
+decoder.to(device)
 
 # Training
 optimizer = optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=lr)
@@ -148,7 +142,6 @@ def train(epoch, keep_data=False):
 
         logits = encoder(X, rel_rec, rel_send)
         edges = gumbel_softmax(logits, tau=temp, hard=hard)
-        print("%d edges are 0" % (torch.sum(edges == 0)))
         prob = F.softmax(logits, dim=-1)
 
         output = decoder(X, edges, rel_rec, rel_send)
@@ -158,7 +151,7 @@ def train(epoch, keep_data=False):
 
         # Our reconstruction loss is a bit weird, not sure what a
         # statistician would say!
-        loss_rec = F.cross_entropy_loss(output, Y, reduction="elementwise_mean")
+        loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
         loss = loss_kl + loss_rec
 
         loss.backward()
@@ -174,7 +167,7 @@ def train(epoch, keep_data=False):
     loss_rec = np.mean(losses_rec)
 
     print(f"{time_str()} Epoch {epoch} done in {time.time() - t:.2f}s - "
-          f"loss {loss_kl:.3f} loss {loss_rec:.3f}.")
+          f"loss KL {loss_kl:.3f} loss reconstruction {loss_rec:.3f}.")
 
     if keep_data:
         return loss_kl, loss_rec, data
@@ -186,7 +179,7 @@ def validate(epoch, keep_data=False):
 
     losses_kl = []; losses_rec = []
     if keep_data:
-        data = {"edges": []}
+        data = {"edges": [], "target": [], "preds": []}
 
     encoder.eval()
     decoder.eval()
@@ -205,13 +198,15 @@ def validate(epoch, keep_data=False):
 
         # Our reconstruction loss is a bit weird, not sure what a
         # statistician would say!
-        loss_rec = F.cross_entropy_loss(output, Y, reduction="elementwise_mean")
+        loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
 
         losses_kl.append(loss_kl.data.cpu().numpy())
         losses_rec.append(loss_rec.data.cpu().numpy())
 
         if keep_data:
             data["edges"].append(edges)
+            data["target"].append(inputs["Y"].cpu().numpy())
+            data["preds"].append(output.data.cpu().numpy())
 
     loss_kl = np.mean(losses_kl)
     loss_rec = np.mean(losses_rec)
@@ -220,12 +215,25 @@ def validate(epoch, keep_data=False):
           f"loss {loss_kl:.3f} loss {loss_rec:.3f}.")
 
     if keep_data:
+        data["target"] = np.concatenate(data["target"])
+        data["preds"] = np.concatenate(data["preds"])
         return loss_kl, loss_rec, data
 
     return loss_kl, loss_rec
 
+def training_summaries(data, epoch, summary_writer):
+    import sklearn.metrics as metrics
 
-""" Training Loop (TODO fix)"""
+    targets = data["target"]
+    preds = np.argmax(data["preds"], axis=1)
+
+    # Accuracy
+    accuracy = metrics.accuracy_score(targets, preds, normalize=True)
+    print("Acc: ", accuracy)
+    summary_writer.add_scalar("accuracy", accuracy, epoch)
+    
+
+""" Training Loop """
 
 summary_path = os.path.join(log_path, model_name)
 summary_writer = SummaryWriter(log_dir=summary_path)
@@ -239,9 +247,9 @@ for epoch in range(num_epochs):
     if keep_data:
         loss_val, data_val = out_val
         st = time.time()
-        # training_summaries(data,
-        #                    epoch,
-        #                    summary_writer)
+        training_summaries(data,
+                           epoch,
+                           summary_writer)
         print(f"{time_str()} Wrote summary data to tensorboard in {time.time() - st:.2f}s.")
 
 print("Finished training. Exiting.")
