@@ -34,10 +34,10 @@ num_atoms = 423
 num_timesteps = 250
 
 temp = 0.5
-hard = False
+hard = True
 
 # Batch size
-batch_size = 4
+batch_size = 1
 # Learning rate
 lr = 0.001
 # rate of exponential decay for the learning rate (applied each epoch)
@@ -51,7 +51,7 @@ prior = np.array([0.92, 0.02, 0.02, 0.02, 0.02])
 edge_types = len(prior)
 encoder_dropout = 0.0
 decoder_dropout = 0.0
-factor = True
+factor = False
 
 num_classes = 6
 
@@ -88,11 +88,15 @@ val_loader = data.DataLoader(val_dataset,
 
 # Generate off-diagonal interaction graph
 off_diag = np.ones([num_atoms, num_atoms]) - np.eye(num_atoms)
-
-rel_rec = np.array(encode_onehot(np.where(off_diag)[1]), dtype=np.float32)
-rel_send = np.array(encode_onehot(np.where(off_diag)[0]), dtype=np.float32)
-rel_rec = to_sparse(torch.tensor(rel_rec)).to(device)
-rel_send = to_sparse(torch.tensor(rel_send)).to(device)
+rel_rec = to_sparse(torch.tensor(off_diag)).to(device)
+rel_send = rel_re
+rel_send = rel_recc
+#rel_rec = np.array(encode_onehot(np.where(off_diag)[1]), dtype=np.float32)
+#rel_send = np.array(encode_onehot(np.where(off_diag)[0]), dtype=np.float32)
+#rel_rec = (torch.tensor(rel_rec))
+#rel_send = (torch.tensor(rel_send))
+#rel_rec = to_sparse(rel_rec).to(device)
+#rel_send = to_sparse(rel_send).to(device)
 
 # Encoder
 encoder = MLPEncoder(num_timesteps,
@@ -144,6 +148,7 @@ def train(epoch, keep_data=False):
 
         logits = encoder(X, rel_rec, rel_send)
         edges = gumbel_softmax(logits, tau=temp, hard=hard)
+        print("%d edges are 0" % (torch.sum(edges == 0)))
         prob = F.softmax(logits, dim=-1)
 
         output = decoder(X, edges, rel_rec, rel_send)

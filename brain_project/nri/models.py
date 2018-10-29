@@ -98,7 +98,10 @@ class MLPEncoder(nn.Module):
         NOTE:
          Assumes that we have the same graph across all samples.
         """
-        incoming = torch.matmul(rel_rec.t(), x)
+        rel_rect = rel_rec.t()
+        incoming = torch.empty(x.size(0), rel_rect.size(0), x.size(2))
+        for b in range(x.size(0)):
+            incoming[b] = torch.mm(rel_rect, x[b])
         return incoming / incoming.size(1)
 
     def node2edge(self, x, rel_rec, rel_send):
@@ -117,11 +120,18 @@ class MLPEncoder(nn.Module):
          Assumes that we have the same graph across all samples.
         """
         # matmuls are bmm + logic to get the dimensions correct
-        receivers = torch.matmul(rel_rec, x) # [batch, num_edges, dim]
-        print(receivers.size(), receivers)
-        senders = torch.matmul(rel_send, x)
-        print(senders.size(), senders)
+        receivers = torch.empty(x.size(0), rel_rec.size(0), x.size(2), dtype=torch.float32, device=x.device, requires_grad=True)
+        senders = torch.empty(x.size(0), rel_rec.size(0), x.size(2), dtype=torch.float32, device=x.device, requires_grad=True)
+        for b in range(x.size(0)):
+            receivers[b] = torch.mm(rel_rec, x[b])
+            senders[b] = torch.mm(rel_send, x[b])
         edges = torch.cat([receivers, senders], dim=2)
+        return edges
+
+    def node2edgev2(self, x, adj):
+        row, col = adj._indices()
+        
+        edges = torch.stack((x[row], x[col]), dim=2)
         return edges
 
     def forward(self, inputs, rel_rec, rel_send):
@@ -143,7 +153,7 @@ class MLPEncoder(nn.Module):
 
         x = self.mlp1(x)  # [num_sims, num_atoms, n_hid]
 
-        x = self.node2edge(x, rel_rec, rel_send) # [num_sims, num_edges, n_hid*2]
+        x = self.node2edgev2(x, rel_rec) # [num_sims, num_edges, n_hid*2]
         x = self.mlp2(x) # [num_sims, num_edges, n_hid]
         x_skip = x
 
@@ -197,6 +207,7 @@ class MLPDecoder(nn.Module):
         self.msg_out = msg_out
         self.data_dim = 2
 
+        self.agg_fc1 = nn.ModuleList([nn.Linear(250, msg_out) for i in range(n_edge_types)])
         self.msg_fc1 = nn.ModuleList([nn.Linear(2, msg_hid) for i in range(n_edge_types)])
         self.msg_fc2 = nn.ModuleList([nn.Linear(msg_hid, msg_out) for i in range(n_edge_types)])
 
@@ -206,7 +217,7 @@ class MLPDecoder(nn.Module):
                           batch_first=True,
                           dropout=dropout_prob)
 
-        self.out_fc1 = nn.Linear(rnn_hid, n_hid)
+        self.out_fc1 = nn.Linear(msg_out, n_hid)
         self.out_fc2 = nn.Linear(n_hid, n_hid)
         self.out_fc3 = nn.Linear(n_hid, n_classes)
 
@@ -231,15 +242,40 @@ class MLPDecoder(nn.Module):
             Binary matrix telling where outgoing edges are.
         """
 
-        B, N, T, D = inputs.size()
-        assert D == self.data_dim
+        B, N, T = inputs.size()
         B, E, Et = rel_type.size()
 
-        rel_type = rel_type.unsqueeze(1).expand([B, T, E, Et])
-        inputs = inputs.transpose(1, 2) # [batch, T, N, D]
+        rel_type_A = rel_type.view(B, N, N, Et)
+        X = inputs
 
-        receivers = torch.matmul(rel_rec, inputs) # [B, T, E, D]
-        senders = torch.matmul(rel_send, inputs) # [B, T, E, D]
+
+
+        out_wv = torch.zeros(B, N, self.msg_out, dtype=torch.float32, deice=X.device, requires_grad=True)
+        for i in range(1, Et):
+            trans_in = self.agg_fc1[i](inputs)
+            for b in range(B):
+                out_b = torch.mm(rel_type_A[b,:,:,i:i+1], trans_in[b])
+                out_b = F.relu(out_b)
+                out_b = F.dropout(out_b, p=self.dropout_prob)
+                out_wv[b] += out_b
+
+        # Prediction MLP
+        pred = F.dropout(F.relu(self.out_fc1(out_wv)), p=self.dropout_prob)
+        pred = F.dropout(F.relu(self.out_fc2(pred)), p=self.dropout_prob)
+        pred_logit = self.out_fc3(pred)
+
+        return pred_logit
+
+
+        rel_type = rel_type.unsqueeze(1).expand([B, T, E, Et])
+        #inputs = inputs.transpose(1, 2) # [batch, T, N, D]
+
+        receivers = torch.empty(B, T, E, 1, dtype=torch.float32, device=inputs.device, requires_grad=True)
+        senders = torch.empty(B, T, E, 1, dtype=torch.float32, device=inputs.device, requires_grad=True)
+        for b in range(B):
+            receivers[b] = torch.mm(rel_rec, inputs[b]).t().unsqueeze(2)
+            senders[b] = torch.mm(rel_send, inputs[b]).t().unsqueeze(2)
+
         pre_msg = torch.cat((receivers, senders), dim=-1) # [B, T, E, 2*D]
 
         all_msgs = torch.zeros(B, T, E, self.msg_out).to(inputs.device)
@@ -254,7 +290,11 @@ class MLPDecoder(nn.Module):
             all_msgs += msg
 
         # Aggregate edge->nodes
-        agg_msgs = all_msgs.transpose(-2, -1).matmul(rel_rec).transpose(-2, -1) # [B, T, N, O]
+        all_msgs = all_msgs.transpose(1, 2).view(B, E, -1)
+        rel_rect = rel_rec.t()
+        agg_msgs = torch.empty(B, T, N, all_msgs.size(-1), dtype=torch.float32, device=inputs.device, requires_grad=True)
+        for b in range(B):
+            agg_msgs[b] = torch.mm(rel_rect, all_msgs[b]).view(B, N, T, -1).transpose(2, 1)
 
         # Skip connection
         aug_inputs = torch.cat([inputs, agg_msgs], dim=-1) # [B, T, N, O+D]

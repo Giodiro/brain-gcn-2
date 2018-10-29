@@ -95,7 +95,7 @@ def gumbel_softmax(logits, tau=1, hard=False, eps=1e-10):
         #   subtract y_soft value)
         # - makes the gradient equal to y_soft gradient (since we strip
         #   all other gradients)
-        y = Variable(y_hard - y_soft.data) + y_soft # TODO: test this works
+        y = (y_hard - y_soft.data) + y_soft # TODO: test this works
     else:
         y = y_soft
 
