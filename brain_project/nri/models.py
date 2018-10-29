@@ -169,7 +169,8 @@ class MLPDecoder(nn.Module):
         msg_out : int,
         n_hid : int,
         rnn_hid : int,
-        n_classes : int):
+        n_classes : int,
+        dropout_prob : float):
         """
         Args:
          n_in_node : int
@@ -194,8 +195,8 @@ class MLPDecoder(nn.Module):
         self.msg_out = msg_out
         self.data_dim = 2
 
-        self.msg_fc1 = nn.ModuleList([nn.Linear(2, msg_hid) for i in n_edge_types])
-        self.msg_fc2 = nn.ModuleList([nn.Linear(msg_hid, msg_out) for i in n_edge_types])
+        self.msg_fc1 = nn.ModuleList([nn.Linear(2, msg_hid) for i in range(n_edge_types)])
+        self.msg_fc2 = nn.ModuleList([nn.Linear(msg_hid, msg_out) for i in range(n_edge_types)])
 
         self.rnn = nn.GRU(input_size=n_in_node*(msg_out + 2),
                           hidden_size=rnn_hid,
@@ -229,7 +230,7 @@ class MLPDecoder(nn.Module):
         """
 
         B, N, T, D = inputs.size()
-        assert D = self.data_dim
+        assert D == self.data_dim
         B, E, Et = rel_type.size()
 
         rel_type = rel_type.unsqueeze(1).expand([B, T, E, Et])

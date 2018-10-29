@@ -1,3 +1,20 @@
+import os
+import numpy as np
+import json
+import time
+
+import torch
+import torch.nn as nn
+import torch.utils.data as data
+import torch.nn.functional as F
+import torch.optim as optim
+import torch.optim.lr_scheduler as lr_scheduler
+
+from tensorboardX import SummaryWriter
+from dataset import EEGDataset2
+from data_utils import split_within_subj
+from util import time_str, mkdir_p, kl_categorical, gumbel_softmax, safe_time_str, encode_onehot
+from models import MLPEncoder, MLPDecoder
 
 
 """  Parameters  """
@@ -7,12 +24,16 @@ if torch.cuda.is_available():
 else:
     device = "cpu"
 
-orig_data_folder = "/nfs/nas/..."
-data_folder = "/scratch/gmeanti/..."
+orig_data_folder = "/nfs/nas12.ethz.ch/fs1201/infk_jbuhmann_project_leonhard/cardioml/"
+data_folder = "/cluster/home/gmeanti/cardioml/dataset2/subsample5_size250_batch32"
+log_path = "gen_data/logs/"
 subject_list = ["S01", "S02"]
 normalization = "none"
 num_atoms = 423
 num_timesteps = 250
+
+temp = 0.5
+hard = False
 
 # Batch size
 batch_size = 32
@@ -22,11 +43,13 @@ lr = 0.001
 lr_decay = 0.7
 # Maximum number of epochs to run for
 num_epochs = 1000
+plot_interval = 5
 
 encoder_hidden = 128
 prior = np.array([0.92, 0.02, 0.02, 0.02, 0.02])
 edge_types = len(prior)
 encoder_dropout = 0.0
+decoder_dropout = 0.0
 factor = True
 
 num_classes = 6
@@ -38,7 +61,8 @@ model_name = (f"NRIClassif{safe_time_str()}_enc{encoder_hidden}_"
 
 """ Data Loading """
 
-subj_data = json.load(os.path.join(data_folder, "subj_data.json"))
+with open(os.path.join(data_folder, "subj_data.json"), "r") as fh:
+    subj_data = json.load(fh)
 
 tr_indices, val_indices = split_within_subj(subject_list, subj_data)
 
@@ -89,12 +113,13 @@ decoder = MLPDecoder(n_in_node=num_atoms,
                      msg_out=16,
                      n_hid=128,
                      rnn_hid=128,
-                     n_classes=num_classes)
+                     n_classes=num_classes,
+                     dropout_prob=decoder_dropout)
 next(decoder.parameters()).to(device)
 
 # Training
-optimizer = optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=args.lr)
-scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=args.lr_decay)
+optimizer = optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=lr)
+scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=lr_decay)
 
 """ Train / Validation Functions """
 
@@ -115,13 +140,13 @@ def train(epoch, keep_data=False):
         optimizer.zero_grad()
 
         logits = encoder(X, rel_rec, rel_send)
-        edges = gumbel_softmax(logits, tau=args.temp, hard=args.hard)
+        edges = gumbel_softmax(logits, tau=temp, hard=hard)
         prob = F.softmax(logits, dim=-1)
 
         output = decoder(X, edges, rel_rec, rel_send)
 
         # ... Loss calculation wrt target ...
-        loss_kl = kl_categorical(prob, log_prior, args.num_atoms)
+        loss_kl = kl_categorical(prob, log_prior, num_atoms)
 
         # Our reconstruction loss is a bit weird, not sure what a
         # statistician would say!
@@ -162,13 +187,13 @@ def validate(epoch, keep_data=False):
         Y = inputs["Y"].to(device)
 
         logits = encoder(X, rel_rec, rel_send)
-        edges = gumbel_softmax(logits, tau=args.temp, hard=args.hard)
+        edges = gumbel_softmax(logits, tau=temp, hard=hard)
         prob = F.softmax(logits, dim=-1)
 
         output = decoder(X, edges, rel_rec, rel_send)
 
         # ... Loss calculation wrt target ...
-        loss_kl = kl_categorical(prob, log_prior, args.num_atoms)
+        loss_kl = kl_categorical(prob, log_prior, num_atoms)
 
         # Our reconstruction loss is a bit weird, not sure what a
         # statistician would say!

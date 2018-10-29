@@ -2,7 +2,7 @@ import os
 import json
 import numpy as np
 import torch
-from torch.data import Dataset
+from torch.utils.data import Dataset
 import torch.nn as nn
 
 from cache import LRUCache
@@ -233,12 +233,13 @@ class EEGDataset2(Dataset):
             some of the last frames will be discarded).
         """
         super(EEGDataset2, self).__init__()
-        if normalization not in all_normalizations:
+        if normalization not in EEGDataset2.all_normalizations:
             raise ValueError(f"Normalization must be in {all_normalizations}.")
 
         self.tot_tpoints = 2501
         self.num_nodes = 423
         self.normalization = normalization
+        self.data_folder = data_folder
 
         self.xfile_cache = LRUCache(capacity=50)
         self.yfile_cache = LRUCache(capacity=500)
@@ -259,9 +260,10 @@ class EEGDataset2(Dataset):
         # TODO: Run normalization
 
         sample = {
-            "X": torch.tensor(X),
-            "Y": torch.tensor(Y),
+            "X": torch.tensor(X.astype(np.float32).transpose()),
+            "Y": torch.tensor(Y, dtype=torch.long),
         }
+        return sample
 
     def __len__(self):
         return len(self.file_indices)

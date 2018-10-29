@@ -12,7 +12,7 @@ class LRUCache:
             self.cache[key] = value
             return value
         except KeyError:
-            return -1
+            return None
 
     def set(self, key, value):
         try:
@@ -24,7 +24,7 @@ class LRUCache:
 
     def load(self, file, index_in_file):
         arr = self.get(file)
-        if arr == -1:
+        if arr is None:
             arr = np.load(file)
 
         self.set(file, arr)
