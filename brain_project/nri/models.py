@@ -117,8 +117,10 @@ class MLPEncoder(nn.Module):
          Assumes that we have the same graph across all samples.
         """
         # matmuls are bmm + logic to get the dimensions correct
-        receivers = torch.matmul(rel_rec, x)
+        receivers = torch.matmul(rel_rec, x) # [batch, num_edges, dim]
+        print(receivers.size(), receivers)
         senders = torch.matmul(rel_send, x)
+        print(senders.size(), senders)
         edges = torch.cat([receivers, senders], dim=2)
         return edges
 

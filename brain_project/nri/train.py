@@ -14,6 +14,7 @@ from tensorboardX import SummaryWriter
 from dataset import EEGDataset2
 from data_utils import split_within_subj
 from util import time_str, mkdir_p, kl_categorical, gumbel_softmax, safe_time_str, encode_onehot
+from sparse_util import to_sparse
 from models import MLPEncoder, MLPDecoder
 
 
@@ -90,8 +91,8 @@ off_diag = np.ones([num_atoms, num_atoms]) - np.eye(num_atoms)
 
 rel_rec = np.array(encode_onehot(np.where(off_diag)[1]), dtype=np.float32)
 rel_send = np.array(encode_onehot(np.where(off_diag)[0]), dtype=np.float32)
-rel_rec = torch.tensor(rel_rec).to(device)
-rel_send = torch.tensor(rel_send).to(device)
+rel_rec = to_sparse(torch.tensor(rel_rec)).to(device)
+rel_send = to_sparse(torch.tensor(rel_send)).to(device)
 
 # Encoder
 encoder = MLPEncoder(num_timesteps,
