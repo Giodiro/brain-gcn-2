@@ -1,5 +1,5 @@
 
-
+import numpy as np
 import torch
 
 
@@ -70,7 +70,7 @@ def block_diag_from_ivs_torch(ivs_list):
     #     out_indices[:,idx] = indices + offsets[i]
     #     nnz += in_nnz[i]
 
-    return out_indices, out_data, out_shape
+    return (out_indices, out_data, out_shape)
 
 
 
