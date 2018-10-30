@@ -219,11 +219,7 @@ class MLPDecoder(nn.Module):
         """
 
         B, N, T = inputs.size()
-        B, E, Et = rel_type.size()
-
-        X = inputs    # [B, N, T]
-        R = rel_type  # [B, E, Et]
-        A = rel_rec   # [N, N]
+        Et = len(sparse_edges)
 
         """
         We get as input: X and Et adjacency matrices (in disguise)
@@ -233,27 +229,22 @@ class MLPDecoder(nn.Module):
         we may be able to find a better way?
         """
 
-        row, col = A._indices()
+        X = inputs.view(B*N, T)
+        X = F.relu(self.node_fc1(X))
 
-        all_edges = torch.zeros(B, E, self.msg_out,
-                                dtype=torch.float32,
-                                device=X.device,
-                                requires_grad=True)
-        X_edges = X[:,row]
+        all_agg = torch.zeros(B*N, self.msg_out)
         for i in range(1, Et):
-            curr_edges = torch.mul(X_edges, R[:,:,i:i+1])  # B x E x T
-            curr_edges = self.msg_fc1[i](curr_edges)       # B x E x T'
-            curr_edges = self.msg_fc2[i](curr_edges)       # B x E x T''
-            curr_edges = F.relu(curr_edges)
-            curr_edges = F.dropout(curr_edges, p=self.dropout_prob)
+            edges = sparse_edges[i]
+            agg = torch.mm(edges, X)
+            agg = F.dropout(F.relu(self.msg_fc1[i](agg)), p=self.dropout_prob)
+            agg = torch.mm(edges, agg)
+            agg = F.dropout(F.relu(self.msg_fc2[i](agg)), p=self.dropout_prob)
+            all_agg = all_agg + agg
 
-            all_edges = all_edges + curr_edges
-
-        # Aggregate the nodes
-        agg_nodes = scatter_add(all_edges, col, dim=1, dim_size=N) # B x N x T''
-
+        # agg [B*N, msg_out]
         # Prediction MLP
-        pred = F.dropout(F.relu(self.out_fc1(agg_nodes)), p=self.dropout_prob) # B x N x F
+        all_agg = all_agg.view(B, N, T)
+        pred = F.dropout(F.relu(self.out_fc1(all_agg)), p=self.dropout_prob) # B x N x F
         pred = F.dropout(F.relu(self.out_fc2(pred)), p=self.dropout_prob) # B x N x F'
 
         # Node aggregation
@@ -261,4 +252,3 @@ class MLPDecoder(nn.Module):
         pred_logit = self.out_fc3(pred) # B x O
 
         return pred_logit
-
