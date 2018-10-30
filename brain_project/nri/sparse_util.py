@@ -36,3 +36,84 @@ def create_sparse_batch(list_of_sparse):
     new_I = torch.cat(I_list, 1)
     new_V = torch.cat(V_list, 0)
     return torch.sparse_coo_tensor(new_I, new_V, new_size)
+
+
+def block_diag_from_ivs_torch(ivs_list):
+    in_nnz = []
+    in_sides = []
+    in_data = []; in_indices = []
+    for i, v, s in ivs_list:
+        in_nnz.append(v.numel())
+        in_sides.append(s[0])
+        in_data.append(v)
+        in_indices.append(i)
+
+    tot_nnz = sum(in_nnz)
+
+    np_offsets = np.append(0, np.cumsum(in_sides)[:-1])
+    np_offsets = np.repeat(np_offsets, repeats=in_nnz)
+
+    out_side = np.cumsum(in_sides)[-1]
+    out_shape = (out_side, out_side)
+
+    out_data = torch.cat(in_data, 0)
+    out_indices = torch.cat(in_indices, 1)
+
+    out_indices.add_(torch.from_numpy(np_offsets).to(out_indices.device))
+
+    ## This is the longer version
+    # nnz = 0
+    # for i in range(nmats):
+    #     indices, values, shape = ivs_list[i]
+    #     idx = slice(nnz, nnz + in_nnz[i])
+    #     #out_data[idx] = values
+    #     out_indices[:,idx] = indices + offsets[i]
+    #     nnz += in_nnz[i]
+
+    return out_indices, out_data, out_shape
+
+
+
+
+def block_diag_from_ivs(ivs_list, use_shared_memory):
+    in_nnz = []
+    in_sides = []
+    in_data = []; in_indices = []
+    for i, v, s in ivs_list:
+        in_nnz.append(v.numel())
+        in_sides.append(s[0])
+        in_data.append(v)
+        in_indices.append(i)
+
+    tot_nnz = sum(in_nnz)
+
+    np_offsets = np.append(0, np.cumsum(in_sides)[:-1])
+    np_offsets = np.repeat(np_offsets, repeats=in_nnz)
+
+    out_side = np.cumsum(in_sides)[-1]
+    out_shape = (out_side, out_side)
+
+    if use_shared_memory:
+        storage = in_data[0].storage()._new_shared(tot_nnz)
+        out_data = in_data[0].new(storage)
+        torch.cat(in_data, 0, out=out_data)
+
+        storage = in_indices[0].storage()._new_shared(tot_nnz*2)
+        out_indices = in_indices[0].new(storage)
+        torch.cat(in_indices, 1, out=out_indices)
+    else:
+        out_data = torch.cat(in_data, 0)
+        out_indices = torch.cat(in_indices, 1)
+
+    out_indices.add_(torch.from_numpy(np_offsets))
+
+    ## This is the longer version
+    # nnz = 0
+    # for i in range(nmats):
+    #     indices, values, shape = ivs_list[i]
+    #     idx = slice(nnz, nnz + in_nnz[i])
+    #     #out_data[idx] = values
+    #     out_indices[:,idx] = indices + offsets[i]
+    #     nnz += in_nnz[i]
+
+    return out_indices, out_data, out_shape

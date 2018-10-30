@@ -227,9 +227,10 @@ class MLPDecoder(nn.Module):
 
         """
         We get as input: X and Et adjacency matrices (in disguise)
-        We want to aggregate X according to the adj matrices (i.e. a GCN) and then use an aggregatio layer for prediction
+        We want to aggregate X according to the adj matrices (i.e. a GCN) and then use an aggregation layer for prediction
 
-        The main issue is caused by batching. This was solved previously
+        The main issue is caused by batching. This was solved previously by using block-diagonal batching. For constant graph sizes
+        we may be able to find a better way?
         """
 
         row, col = A._indices()

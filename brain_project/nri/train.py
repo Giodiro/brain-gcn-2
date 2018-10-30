@@ -14,7 +14,7 @@ from tensorboardX import SummaryWriter
 from dataset import EEGDataset2
 from data_utils import split_within_subj
 from util import time_str, mkdir_p, kl_categorical, gumbel_softmax, safe_time_str, encode_onehot
-from sparse_util import to_sparse
+from sparse_util import to_sparse, cblock_diag_from_ivs_torch
 from models import MLPEncoder, MLPDecoder
 
 
@@ -162,8 +162,21 @@ def train(epoch):
         edges = gumbel_softmax(logits, tau=temp, hard=hard)
         prob = F.softmax(logits, dim=-1)
 
-        output = decoder(X, edges, rel_rec, rel_send)
+        edges_sparse = []
+        indices = adj._indices()
+        for et in range(edges.size(1)):
+            values = edges[:,:,et] # B x E
+            nnz = values.nnz()
+            ivs_list = []
+            for b in range(edges.size(0)):
+                i = values.nnz().t() # 2 x Nnz
+                v = values[i.t()]
+                s = adj_tensor.size()
+                ivs_list.append(i, v, s)
 
+            edges_sparse.append(cblock_diag_from_ivs_torch(ivs_list))
+
+        output = decoder(X, edges_sparse)
         # ... Loss calculation wrt target ...
         loss_kl = kl_categorical(prob, log_prior, num_atoms)
 
@@ -203,13 +216,16 @@ def validate(epoch, keep_data=False):
         edges_sparse = []
         indices = adj._indices()
         for et in range(edges.size(1)):
-            values = edges[:,:,et]
+            values = edges[:,:,et] # B x E
             nnz = values.nnz()
-            list_of_sparse = []
+            ivs_list = []
             for b in range(edges.size(0)):
-                list_of_sparse.append(
-                    torch.sparse_coo_tensor(indices[:,nnz[b]], values[nnz[b]], adj.size()))
-            edges_sparse.append(create_sparse_batch(list_of_sparse))
+                i = values.nnz().t() # 2 x Nnz
+                v = values[i.t()]
+                s = adj_tensor.size()
+                ivs_list.append(i, v, s)
+
+            edges_sparse.append(cblock_diag_from_ivs_torch(ivs_list))
 
         output = decoder(X, edges_sparse)
 
