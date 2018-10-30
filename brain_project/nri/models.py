@@ -137,14 +137,14 @@ class MLPEncoder(nn.Module):
 
         x = self.mlp1(x)  # [num_sims, num_atoms, n_hid]
 
-        x = self.node2edge(x, rel_rec) # [num_sims, num_edges, n_hid*2]
+        x = self.node2edge(x, adj) # [num_sims, num_edges, n_hid*2]
         x = self.mlp2(x) # [num_sims, num_edges, n_hid]
         x_skip = x
 
         if self.factor:
-            x = self.edge2node(x, rel_rec, rel_send) # [num_sims, num_nodes, n_hid]
+            x = self.edge2node(x, adj) # [num_sims, num_nodes, n_hid]
             x = self.mlp3(x) # [num_sims, num_nodes, n_hid]
-            x = self.node2edge(x, rel_rec, rel_send) # [num_sims, num_edges, n_hid*2]
+            x = self.node2edge(x, adj) # [num_sims, num_edges, n_hid*2]
             x = torch.cat((x, x_skip), dim=2)  # Skip connection
             x = self.mlp4(x) # [num_sims, num_edges, n_hid]
         else:

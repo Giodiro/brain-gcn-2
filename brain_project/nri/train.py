@@ -65,7 +65,7 @@ n_classes = 6
 
 
 model_name = (f"NRIClassif{safe_time_str()}_enc{encoder_hidden}_"
-              f"dout{encoder_dropout}_factor{factor}")
+              f"dout{dropout}_factor{factor}")
 
 
 """ Data Loading """
@@ -75,7 +75,7 @@ with open(os.path.join(data_folder, "subj_data.json"), "r") as fh:
 
 tr_indices, val_indices = split_within_subj(subject_list, subj_data)
 print(f"{time_str()} Subject data contains {len(subj_data)} samples coming "
-      f"from subjects {set(v["subj"] for v in subj_data.values())}.\n"
+      f"from subjects {set(v['subj'] for v in subj_data.values())}.\n"
       f"{len(tr_indices)} chosen for training and {len(val_indices)} "
       f"for testing.")
 
@@ -138,8 +138,8 @@ scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=lr_decay)
 
 tot_params = sum([np.prod(p.size()) for p in parameters])
 print(f"{time_str()} Initialized model with {tot_params} parameters:")
-for param in parameters:
-    print(f"\tparam {p.name}: {p.size()}  (tot {np.prod(p.size())})")
+#for p in parameters:
+#    print(f"\tparam {p.name}: {p.size()}  (tot {np.prod(p.size())})")
 
 
 """ Train / Validation Functions """
@@ -158,7 +158,7 @@ def train(epoch):
 
         optimizer.zero_grad()
 
-        logits = encoder(X, rel_rec, rel_send)
+        logits = encoder(X, adj_tensor)
         edges = gumbel_softmax(logits, tau=temp, hard=hard)
         prob = F.softmax(logits, dim=-1)
 
@@ -276,7 +276,7 @@ for epoch in range(n_epochs):
     et = time.time()
 
     keep_data = (epoch > 0) and (epoch % plot_interval == 0)
-    tr_loss_kl, tr_loss_rec = train(epoch, keep_data=False)
+    tr_loss_kl, tr_loss_rec = train(epoch)
     out_val = validate(epoch, keep_data=keep_data)
 
     if keep_data:
