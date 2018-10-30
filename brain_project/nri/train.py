@@ -43,7 +43,7 @@ num_timesteps = 250
 # Temperature of the gumbel-softmax approximation
 temp = 0.2
 # Whether to use the hard one-hot version (TODO: need to check if it actually works).
-hard = False
+hard = True
 
 # Batch size
 batch_size = 2
@@ -167,8 +167,9 @@ def train(epoch):
             values = edges[:,:,et] # B x E
             ivs_list = []
             for b in range(edges.size(0)):
-                i = values[b].nonzero().t() # 2 x Nnz
-                v = values[b][i.t()]
+                nnz = values[b].nonzero()[0] # nnz
+                v = values[b][nnz]
+                i = adj_tensor._indices()[:,nnz]
                 s = adj_tensor.size()
                 ivs_list.append((i, v, s))
 

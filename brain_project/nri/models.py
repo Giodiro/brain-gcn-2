@@ -190,7 +190,8 @@ class MLPDecoder(nn.Module):
         self.msg_out = msg_out
 
         # Message passing
-        self.msg_fc1 = nn.ModuleList([nn.Linear(n_in,    msg_hid) for i in range(n_edge_types)])
+        self.node_fc1 = nn.Linear(n_in, msg_hid)
+        self.msg_fc1 = nn.ModuleList([nn.Linear(msg_hid, msg_hid) for i in range(n_edge_types)])
         self.msg_fc2 = nn.ModuleList([nn.Linear(msg_hid, msg_out) for i in range(n_edge_types)])
 
         self.out_fc1 = nn.Linear(msg_out, n_hid)
@@ -232,9 +233,9 @@ class MLPDecoder(nn.Module):
         X = inputs.view(B*N, T)
         X = F.relu(self.node_fc1(X))
 
-        all_agg = torch.zeros(B*N, self.msg_out)
+        all_agg = torch.zeros(B*N, self.msg_out, dtype=torch.float, device=X.device)
         for i in range(1, Et):
-            edges = sparse_edges[i]
+            edges = torch.sparse.FloatTensor(sparse_edges[i][0], sparse_edges[i][1], sparse_edges[i][2]).to(X.device)
             agg = torch.mm(edges, X)
             agg = F.dropout(F.relu(self.msg_fc1[i](agg)), p=self.dropout_prob)
             agg = torch.mm(edges, agg)
@@ -243,7 +244,7 @@ class MLPDecoder(nn.Module):
 
         # agg [B*N, msg_out]
         # Prediction MLP
-        all_agg = all_agg.view(B, N, T)
+        all_agg = all_agg.view(B, N, self.msg_out)
         pred = F.dropout(F.relu(self.out_fc1(all_agg)), p=self.dropout_prob) # B x N x F
         pred = F.dropout(F.relu(self.out_fc2(pred)), p=self.dropout_prob) # B x N x F'
 
