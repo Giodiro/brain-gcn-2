@@ -17,7 +17,7 @@ all_phases = {"REM_phasic": 1, "REM_tonic": 2,
 
 
 def split_within_subj(subject_list, subj_data, seed=1922318, test_size=0.1):
-    """
+    """Simple random split without taking subject information into account.
     subj_data : dictionary with key: int
     """
     # Restrict to valid subjects
@@ -35,6 +35,51 @@ def split_within_subj(subject_list, subj_data, seed=1922318, test_size=0.1):
 
 
 def prepare_timeseries_data(data_folder, subsample, sample_size, out_folder, save_batch_size):
+    """Run preprocessing on dataset2 (timeseries data)
+
+    The preprocessing consists of a few simple steps to extract short
+    timeseries with homogeneous labels from the data: Each file consists
+    of a 2501 x 423 matrix with a specific sleep label. The time-axis (2501)
+    is first subsampled and then split according to the `sample_size`
+    parameter.
+    The data is then batched according to `save_batch_size` (just to avoid)
+    having milions of files which are then slower to read in, and saved
+    using the npy data format.
+    The folder structure is similar to the one used for dataset1:
+     - `out_folder`
+       - subsample... (descriptive folder for the preprocessing parameters)
+         - subj_data.json
+         - X
+           - S01_0.npy
+           - S01_1.npy
+           - S02_2.npy
+           ...
+         - Y
+           - S01_0.npy
+           - S01_1.npy
+           - S02_2.npy
+           ...
+    File `subj_data.json` is a map structure indexed by the sample number.
+    It contains useful information (e.g. the subject, the file location, etc.)
+    for each sample. This structure makes it easy to create e.g. cross-validation
+    indices without having to read the full data.
+
+    Args:
+     - data_folder : str
+        Path to the original dataset
+     - subsample : int
+        Amount of subsampling to use to load the original timeseries.
+        Set this to 1 to get the full dataset
+     - sample_size : int
+        Each of the original timeseries files gets split into smaller
+        chunks of length `sample_size`. This is applied after subsampling
+        so the final length of each sample is `sample_size * subsample`.
+     - out_folder : str
+        Root directory of the output .npy matrices
+     - save_batch_size : int
+        Output samples are batched into matrices of size `save_batch_size`
+        to make reading back the data faster.
+    """
     base_folder = os.path.join(out_folder, f"subsample{subsample}_size{sample_size}_batch{save_batch_size}")
     y_folder = os.path.join(base_folder, "Y")
     x_folder = os.path.join(base_folder, "X")
