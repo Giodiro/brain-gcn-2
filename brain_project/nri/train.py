@@ -213,18 +213,17 @@ def validate(epoch, keep_data=False):
         prob = F.softmax(logits, dim=-1)
 
         edges_sparse = []
-        indices = adj._indices()
-        for et in range(edges.size(1)):
+        for et in range(edges.size(2)):
             values = edges[:,:,et] # B x E
-            nnz = values.nnz()
             ivs_list = []
             for b in range(edges.size(0)):
-                i = values.nnz().t() # 2 x Nnz
-                v = values[i.t()]
+                nnz = values[b].nonzero()[0] # nnz
+                v = values[b][nnz]
+                i = adj_tensor._indices()[:,nnz]
                 s = adj_tensor.size()
-                ivs_list.append(i, v, s)
+                ivs_list.append((i, v, s))
 
-            edges_sparse.append(cblock_diag_from_ivs_torch(ivs_list))
+            edges_sparse.append(block_diag_from_ivs_torch(ivs_list))
 
         output = decoder(X, edges_sparse)
 
