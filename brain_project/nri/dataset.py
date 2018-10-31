@@ -4,6 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 import torch.nn as nn
+from sklearn.preprocessing import scale
 
 from cache import LRUCache
 
@@ -219,6 +220,8 @@ class EEGDataset2(Dataset):
                           "none",          # Multiply all values by 1e9
                           ]
 
+    NORM_CONSTANT = 1.0e10
+
     def __init__(self, data_folder, file_indices, subj_data, normalization="none"):
         """
         Args:
@@ -233,11 +236,10 @@ class EEGDataset2(Dataset):
             some of the last frames will be discarded).
         """
         super(EEGDataset2, self).__init__()
+        normalization = normalization.lower()
         if normalization not in EEGDataset2.all_normalizations:
             raise ValueError(f"Normalization must be in {all_normalizations}.")
 
-        self.tot_tpoints = 2501
-        self.num_nodes = 423
         self.normalization = normalization
         self.data_folder = data_folder
 
@@ -254,13 +256,14 @@ class EEGDataset2(Dataset):
         y_file = os.path.join(self.data_folder, "Y", sdata["file"])
         iif = sdata["index_in_file"]
 
-        X = self.xfile_cache.load(x_file, iif)
+        X = self.xfile_cache.load(x_file, iif).transpose()
+        X = self.normalize(X)
         Y = self.yfile_cache.load(y_file, iif) - 1  # Necessary, targets must start from 0
 
         # TODO: Run normalization
 
         sample = {
-            "X": torch.tensor(X.astype(np.float32).transpose()),
+            "X": torch.tensor(X, dtype=torch.float32),
             "Y": torch.tensor(Y, dtype=torch.long),
         }
         return sample
@@ -279,5 +282,25 @@ class EEGDataset2(Dataset):
 
         return batch
 
+    def normalize(self, data):
+        """
+        Args:
+         - data : array [time_steps, 423]
 
+        Returns:
+         - norm_data : array [time_steps, 423]
+        """
+
+        if self.normalization == "none":
+            data = data * EEGDataset2.NORM_CONSTANT
+        elif self.normalization == "spat-mean":
+            data = scale(data, with_mean=True, with_std=False, axis=1)
+        elif self.normalization == "spat-std":
+            data = scale(data, with_mean=True, with_std=True, axis=1)
+        elif self.normalization == "temp-mean":
+            data = scale(data, with_mean=True, with_std=False, axis=0)
+        elif self.normalization == "temp-std":
+            data = scale(data, with_mean=True, with_std=True, axis=0)
+
+        return data.astype(np.float32)
 
