@@ -43,10 +43,10 @@ num_timesteps = 250
 # Temperature of the gumbel-softmax approximation
 temp = 0.2
 # Whether to use the hard one-hot version (TODO: need to check if it actually works).
-hard = True
+hard = False
 
 # Batch size
-batch_size = 2
+batch_size = 16
 # Learning rate
 lr = 0.001
 # rate of exponential decay for the learning rate (applied each epoch)
@@ -55,8 +55,8 @@ lr_decay = 0.7
 n_epochs = 1000
 plot_interval = 2
 
-encoder_hidden = 128
-prior = np.array([0.92, 0.02, 0.02, 0.02, 0.02])
+encoder_hidden = 32
+prior = np.array([0.94, 0.02, 0.02, 0.02])
 n_edge_types = len(prior)
 dropout = 0.1
 factor = False
@@ -128,7 +128,7 @@ decoder = MLPDecoder(n_in=num_timesteps,
                      n_edge_types=n_edge_types,
                      msg_hid=128,
                      msg_out=16,
-                     n_hid=128,
+                     n_hid=64,
                      n_classes=n_classes,
                      dropout_prob=dropout)
 decoder.to(device)
@@ -160,25 +160,14 @@ def train(epoch):
         Y = inputs["Y"].to(device)
 
         optimizer.zero_grad()
-
+        es = time.time()
         logits = encoder(X, adj_tensor)
-        edges = gumbel_softmax(logits, tau=temp, hard=hard)
+        ee = time.time()
+        edges = F.gumbel_softmax(logits.view(-1, logits.size(2)), tau=temp, hard=hard).view(logits.size())
         prob = F.softmax(logits, dim=-1)
-
-        edges_sparse = []
-        for et in range(edges.size(2)):
-            values = edges[:,:,et] # B x E
-            ivs_list = []
-            for b in range(edges.size(0)):
-                nnz = values[b].nonzero()[0] # nnz
-                v = values[b][nnz]
-                i = adj_tensor._indices()[:,nnz]
-                s = adj_tensor.size()
-                ivs_list.append((i, v, s))
-
-            edges_sparse.append(block_diag_from_ivs_torch(ivs_list))
-
-        output = decoder(X, edges_sparse)
+        ds = time.time()
+        output = decoder(X, edges)
+        ls = time.time()
         # ... Loss calculation wrt target ...
         loss_kl = kl_categorical(prob, log_prior, num_atoms)
 
@@ -186,9 +175,11 @@ def train(epoch):
         # statistician would say!
         loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
         loss = loss_kl + loss_rec
-
         loss.backward()
+        le = time.time()
         optimizer.step()
+
+        print(f"Training. Enc {ee - es:.3f} - Gumbel {ds - ee:.3f} - Dec {ls - ds:.3f} - Back {le - ls:.3f} - Tot {time.time() - es:.3f}")
 
         losses_kl.append(loss_kl.data.cpu().numpy())
         losses_rec.append(loss_rec.data.cpu().numpy())
@@ -212,23 +203,10 @@ def validate(epoch, keep_data=False):
         Y = inputs["Y"].to(device)
 
         logits = encoder(X, adj_tensor) # batch x n_edges x n_edge_types
-        edges = gumbel_softmax(logits, tau=temp, hard=hard)
+        edges = F.gumbel_softmax(logits.view(-1, logits.size(2)), tau=temp, hard=hard).view(logits.size())
         prob = F.softmax(logits, dim=-1)
 
-        edges_sparse = []
-        for et in range(edges.size(2)):
-            values = edges[:,:,et] # B x E
-            ivs_list = []
-            for b in range(edges.size(0)):
-                nnz = values[b].nonzero()[0] # nnz
-                v = values[b][nnz]
-                i = adj_tensor._indices()[:,nnz]
-                s = adj_tensor.size()
-                ivs_list.append((i, v, s))
-
-            edges_sparse.append(block_diag_from_ivs_torch(ivs_list))
-
-        output = decoder(X, edges_sparse)
+        output = decoder(X, edges)
 
         # ... Loss calculation wrt target ...
         loss_kl = kl_categorical(prob, log_prior, num_atoms)
