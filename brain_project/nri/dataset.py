@@ -4,9 +4,10 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 import torch.nn as nn
-from sklearn.preprocessing import scale
+from sklearn.preprocessing import StandardScaler
 
 from cache import LRUCache
+from util import time_str
 
 
 all_subjects = ['S01', 'S03', 'S04',
@@ -213,11 +214,9 @@ class EEGDataset2(Dataset):
       (e.g. 1e-9) number to avoid precision issues.
     """
 
-    all_normalizations = ["spat-mean",     # Make each time-frame 0 mean
-                          "spat-standard", # Standardize each time-frame
-                          "temp-mean",     # Make each ROI 0 mean
-                          "temp-standard", # Standardize each ROI
-                          "none",          # Multiply all values by 1e9
+    all_normalizations = ["standard",     # Standardize each ROI
+                          "none",         # Multiply all values by NORM_CONSTANT
+                          "val",          # Indicates that this is a validation loader so normalization is loaded from the tr loader
                           ]
 
     NORM_CONSTANT = 1.0e10
@@ -249,18 +248,23 @@ class EEGDataset2(Dataset):
 
         self.file_indices = file_indices
 
-    def __getitem__(self, idx):
+        self.init_normalizer()
+
+    def get_xy_files(self, idx):
         idx = self.file_indices[idx]
         sdata = self.subj_data[idx]
         x_file = os.path.join(self.data_folder, "X", sdata["file"])
         y_file = os.path.join(self.data_folder, "Y", sdata["file"])
         iif = sdata["index_in_file"]
 
+        return x_file, y_file, iif
+        
+    def __getitem__(self, idx):
+        x_file, y_file, iif = self.get_xy_files(idx)
+
         X = self.xfile_cache.load(x_file, iif).transpose()
         X = self.normalize(X)
         Y = self.yfile_cache.load(y_file, iif) - 1  # Necessary, targets must start from 0
-
-        # TODO: Run normalization
 
         sample = {
             "X": torch.tensor(X, dtype=torch.float32),
@@ -282,6 +286,25 @@ class EEGDataset2(Dataset):
 
         return batch
 
+    def init_normalizer(self):
+        if self.normalization == "val":
+            return
+
+        print(f"{time_str()} Initializing normalization ({self.normalization}) statistics.")
+        if self.normalization == "none":
+            self.scaler = None
+            return
+
+        self.scaler = StandardScaler(copy=False, with_mean=True, with_std=True)
+        # Iterate all samples to compute statistics.
+        # TODO: This can be optimized to feed the scalers all samples read from a file
+        #       but care must be taken to actually only feed it samples whose id is in
+        #       the allowed ids.
+        for i in range(len(self)):
+            x_file, y_file, iif = self.get_xy_files(i)
+            X = self.xfile_cache.load(x_file, iif).transpose()
+            self.scaler.partial_fit(X)
+
     def normalize(self, data):
         """
         Args:
@@ -293,14 +316,8 @@ class EEGDataset2(Dataset):
 
         if self.normalization == "none":
             data = data * EEGDataset2.NORM_CONSTANT
-        elif self.normalization == "spat-mean":
-            data = scale(data, with_mean=True, with_std=False, axis=1)
-        elif self.normalization == "spat-std":
-            data = scale(data, with_mean=True, with_std=True, axis=1)
-        elif self.normalization == "temp-mean":
-            data = scale(data, with_mean=True, with_std=False, axis=0)
-        elif self.normalization == "temp-std":
-            data = scale(data, with_mean=True, with_std=True, axis=0)
+        else:
+            data = self.scaler.transform(data)
 
         return data.astype(np.float32)
 

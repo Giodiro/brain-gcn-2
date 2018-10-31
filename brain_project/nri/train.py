@@ -34,7 +34,7 @@ log_path = "gen_data/logs/"
 # Subject list is used to restrict loaded data to just the listed subjects.
 subject_list = ["S01", "S02"]
 # This must be implemented in the dataset class (TODO)
-normalization = "none"
+normalization = "standard"
 # The number of nodes in each graph.
 num_atoms = 423
 # The number of time-steps per sample (this depends on the preprocessing).
@@ -81,7 +81,10 @@ print(f"{time_str()} Subject data contains {len(subj_data)} samples coming "
 
 num_workers = 3
 tr_dataset = EEGDataset2(data_folder, tr_indices, subj_data, normalization)
-val_dataset = EEGDataset2(data_folder, val_indices, subj_data, normalization)
+val_dataset = EEGDataset2(data_folder, val_indices, subj_data, normalization="val")
+# Normalization statistics should only be computed on the training set.
+val_dataset.normalization = tr_dataset.normalization
+val_dataset.scaler = tr_dataset.scaler
 
 tr_loader = data.DataLoader(tr_dataset,
                             shuffle=True,
@@ -200,7 +203,7 @@ def validate(epoch, keep_data=False):
 
     losses_kl = []; losses_rec = []
     if keep_data:
-        data = {"edges": [], "target": [], "preds": []}
+        data_dict = {"edges": [], "target": [], "preds": []}
 
     encoder.eval()
     decoder.eval()
@@ -238,25 +241,25 @@ def validate(epoch, keep_data=False):
         losses_rec.append(loss_rec.data.cpu().numpy())
 
         if keep_data:
-            data["edges"].append(edges)
-            data["target"].append(inputs["Y"].cpu().numpy())
-            data["preds"].append(output.data.cpu().numpy())
+            data_dict["edges"].append(edges.data.cpu().numpy())
+            data_dict["target"].append(inputs["Y"].data.cpu().numpy())
+            data_dict["preds"].append(output.data.cpu().numpy())
 
     loss_kl = np.mean(losses_kl)
     loss_rec = np.mean(losses_rec)
 
     if keep_data:
-        data["target"] = np.concatenate(data["target"])
-        data["preds"] = np.concatenate(data["preds"])
-        return loss_kl, loss_rec, data
+        data_dict["target"] = np.concatenate(data_dict["target"])
+        data_dict["preds"] = np.concatenate(data_dict["preds"])
+        return loss_kl, loss_rec, data_dict
 
     return loss_kl, loss_rec
 
-def training_summaries(data, epoch, summary_writer):
+def training_summaries(data_dict, epoch, summary_writer):
     import sklearn.metrics as metrics
 
-    targets = data["target"]
-    preds = np.argmax(data["preds"], axis=1)
+    targets = data_dict["target"]
+    preds = np.argmax(data_dict["preds"], axis=1)
 
     # Accuracy
     accuracy = metrics.accuracy_score(targets, preds, normalize=True)
@@ -280,7 +283,7 @@ for epoch in range(n_epochs):
     if keep_data:
         val_loss_kl, val_loss_rec, data_val = out_val
         st = time.time()
-        training_summaries(data,
+        training_summaries(data_val,
                            epoch,
                            summary_writer)
         print(f"{time_str()} Wrote summary data to tensorboard in {time.time() - st:.2f}s.")
