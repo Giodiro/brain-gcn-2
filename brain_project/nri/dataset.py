@@ -205,13 +205,10 @@ class EEGDataset2(Dataset):
     Note:
       The dataset has very small values (i.e. 1e-10 range). This may cause
       precision errors when using single-precision floating point numbers.
-      We therefore need to investigate normalization (0-mean, 1-var) options:
-       - spatial normalization may lose information if certain time frames
-         have less overall activity
-       - temporal normalization may lose information if certain ROIs have
-         lower/higher mean activity.
-      Otherwise one could just multiply the values by a suitably large
-      (e.g. 1e-9) number to avoid precision issues.
+      This class offers two normalization options:
+       - standardizing each ROI to 0-mean, unit variance (requires preprocessing
+         the whole dataset to extract global statistics)
+       - scaling by a large value (NORM_CONSTANT).
     """
 
     all_normalizations = ["standard",     # Standardize each ROI
@@ -225,17 +222,19 @@ class EEGDataset2(Dataset):
         """
         Args:
           data_folder : str
-          subject_list : List[str]
+            The root folder of the preprocessed data.
+          file_indices : Dict[int->int]
+            Converts linear indices useful to iterate through the dataset
+            into keys for the `subj_data` structure.
+          subj_data : dict
+            Information about the file location of each sample
           normalization : str
-          num_timepoints : int
-            The number time-points to use in each sample. Each file currently
-            holds 2501 time points, so this is the maximum (although this
-            limit may change if we get full trajectories). Lower values will
-            cause each file to be split up into multiple samples (and possibly
-            some of the last frames will be discarded).
+            The type of normalization to use for the data. This can be either
+            standard, none or val. val should only be used if this is a
+            validation dataset and the statistics are extracted from the
+            training set.
         """
         super(EEGDataset2, self).__init__()
-        normalization = normalization.lower()
         if normalization not in EEGDataset2.all_normalizations:
             raise ValueError(f"Normalization must be in {all_normalizations}.")
 
@@ -245,7 +244,6 @@ class EEGDataset2(Dataset):
         self.xfile_cache = LRUCache(capacity=50)
         self.yfile_cache = LRUCache(capacity=500)
         self.subj_data = subj_data
-
         self.file_indices = file_indices
 
         self.init_normalizer()
@@ -258,7 +256,7 @@ class EEGDataset2(Dataset):
         iif = sdata["index_in_file"]
 
         return x_file, y_file, iif
-        
+
     def __getitem__(self, idx):
         x_file, y_file, iif = self.get_xy_files(idx)
 
@@ -313,6 +311,8 @@ class EEGDataset2(Dataset):
         Returns:
          - norm_data : array [time_steps, 423]
         """
+        if self.normalization == "val":
+            raise ValueError("Normalization cannot be `val`, must be set to a concrete value.")
 
         if self.normalization == "none":
             data = data * EEGDataset2.NORM_CONSTANT
