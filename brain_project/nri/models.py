@@ -6,6 +6,89 @@ import torch.nn.functional as F
 from torch_scatter import scatter_add
 
 
+class FastEncoder(nn.Module):
+
+    def __init__(self, n_in, n_hid, n_out, do_prob):
+        super(FastEncoder, self).__init__()
+
+        self.edge_types = n_out
+        self.dropout_prob = do_prob
+
+        self.node_fc1 = nn.Linear(n_in, n_hid)
+        self.node_fc2 = nn.Linear(n_hid, n_hid)
+
+        self.spec_fc = nn.ModuleList([nn.Linear(n_hid, n_hid) for i in range(n_out)])
+        self.out_fc = nn.ModuleList([nn.Linear(n_hid, n_hid) for i in range(n_out)])
+
+
+    def forward(self, inputs, adj):
+        # Predict edge logits by using node similarity after a NN branch (1 for each edge)
+
+        # Input shape: [num_sims, num_atoms, num_timesteps, num_dims]
+        x = inputs.view(inputs.size(0), inputs.size(1), -1)
+        # New shape: [num_sims, num_atoms, num_timesteps*num_dims]
+
+        ## Transform the node features
+        x = F.dropout(F.relu(self.node_fc1(x)), p=self.dropout_prob)  # [num_sims, num_atoms, n_hid]
+        x = F.dropout(F.relu(self.node_fc2(x)), p=self.dropout_prob)  # [num_sims, num_atoms, n_hid]
+
+        row, col = adj._indices()
+
+        edge_predictions = torch.empty(x.size(0), row.size(0), self.edge_types,
+                                       dtype=torch.float32, device=x.device)
+        ## Single branch for each output edge type
+        for i in range(self.edge_types):
+            xe_curr = F.dropout(F.relu(self.spec_fc[i](x)), p=self.dropout_prob)
+            xe_curr = self.out_fc[i](xe_curr) # B x N x F
+            esrc = xe_curr[:,row,:] # B x E x F
+            edst = xe_curr[:,col,:] # B x E x F
+            logits = self.calc_distance(esrc, edst, "dot")
+            edge_predictions[:,i] = logits
+
+        return edge_predictions
+
+
+    def calc_distance(self, e1, e2, dist_type):
+        if dist_type == "norm":
+            p = 2
+            dist = torch.norm(e1 - e2, p=p, dim=-1)
+            return dist
+
+        if dist_type == "dot":
+            # dot-product is not a distance but a similarity measure
+            # (higher dot-product: higher similarity)
+            sim = torch.mul(e1, e2).sum(2)
+            return sim
+
+        if dist_type == "cosine":
+            sim = F.cosine_similarity(e1, e2, 2)
+            return sim
+
+        if dist_type == "svm":
+            alpha = self.model.alpha
+            bias = self.model.bias
+
+            dist = torch.sub(e1, e2)
+            proj_dist = torch.matmul(dist, alpha) + bias
+
+            return proj_dist
+
+        if dist_type == "squared":
+            W = self.model.W
+
+            tempW = torch.mm(e1, W)
+            dist = tempW.mul(e2).sum(-1)
+
+            return dist
+
+
+
+
+
+
+
+
+
 class MLP(nn.Module):
     """Two-layer fully-connected ELU net with batch norm.
     https://github.com/ethanfetaya/NRI/blob/master/modules.py

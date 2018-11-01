@@ -15,7 +15,7 @@ from dataset import EEGDataset2
 from data_utils import split_within_subj
 from util import time_str, mkdir_p, kl_categorical, gumbel_softmax, safe_time_str, encode_onehot
 from sparse_util import to_sparse, block_diag_from_ivs_torch
-from models import MLPEncoder, MLPDecoder
+from models import MLPEncoder, MLPDecoder, FastEncoder
 
 
 """  Parameters  """
@@ -60,6 +60,10 @@ prior = np.array([0.94, 0.02, 0.02, 0.02])
 n_edge_types = len(prior)
 dropout = 0.1
 factor = False
+
+decoder_hidden1 = 32
+decoder_hidden2 = 64
+decoder_out = 16
 
 n_classes = 6
 
@@ -111,11 +115,15 @@ off_diag = np.ones([num_atoms, num_atoms]) - np.eye(num_atoms)
 adj_tensor = to_sparse(torch.tensor(off_diag.astype(np.float32)).to(device))
 
 # Encoder
-encoder = MLPEncoder(n_in=num_timesteps,
-                     n_hid=encoder_hidden,
-                     n_out=n_edge_types,
-                     do_prob=dropout,
-                     factor=factor)
+# encoder = MLPEncoder(n_in=num_timesteps,
+#                      n_hid=encoder_hidden,
+#                      n_out=n_edge_types,
+#                      do_prob=dropout,
+#                      factor=factor)
+encoder = FastEncoder(n_in=num_timesteps,
+                      n_hid=encoder_hidden,
+                      n_out=n_edge_types,
+                      do_prob=dropout)
 encoder.to(device)
 
 # Prior
@@ -126,9 +134,9 @@ log_prior = log_prior.unsqueeze(0).unsqueeze(0)
 # Decoder
 decoder = MLPDecoder(n_in=num_timesteps,
                      n_edge_types=n_edge_types,
-                     msg_hid=128,
-                     msg_out=16,
-                     n_hid=64,
+                     msg_hid=decoder_hidden1,
+                     msg_out=decoder_out,
+                     n_hid=decoder_hidden2,
                      n_classes=n_classes,
                      dropout_prob=dropout)
 decoder.to(device)
