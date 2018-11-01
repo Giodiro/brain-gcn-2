@@ -65,12 +65,12 @@ class MLPEncoder(nn.Module):
 
         self.mlp1 = MLP(n_in, n_hid, n_hid, do_prob)
         self.mlp2 = MLP(n_hid * 2, n_hid, n_hid, do_prob)
-        self.mlp3 = MLP(n_hid, n_hid, n_hid, do_prob)
+        # self.mlp3 = MLP(n_hid, n_hid, n_hid, do_prob)
         if self.factor:
             self.mlp4 = MLP(n_hid * 3, n_hid, n_hid, do_prob)
             print("Using factor graph MLP encoder.")
         else:
-            self.mlp4 = MLP(n_hid * 2, n_hid, n_hid, do_prob)
+            #self.mlp4 = MLP(n_hid * 2, n_hid, n_hid, do_prob)
             print("Using MLP encoder.")
         self.fc_out = nn.Linear(n_hid, n_out)
 
@@ -148,9 +148,10 @@ class MLPEncoder(nn.Module):
             x = torch.cat((x, x_skip), dim=2)  # Skip connection
             x = self.mlp4(x) # [num_sims, num_edges, n_hid]
         else:
-            x = self.mlp3(x)
-            x = torch.cat((x, x_skip), dim=2)  # Skip connection
-            x = self.mlp4(x)
+            #x = self.mlp3(x)
+            #x = torch.cat((x, x_skip), dim=2)  # Skip connection
+            #x = self.mlp4(x)
+            pass
 
         return self.fc_out(x) # [num_sims, num_edges, n_out]
 
@@ -190,9 +191,8 @@ class MLPDecoder(nn.Module):
         self.msg_out = msg_out
 
         # Message passing
-        self.node_fc1 = nn.Linear(n_in, msg_hid)
-        self.msg_fc1 = nn.ModuleList([nn.Linear(msg_hid, msg_hid) for i in range(n_edge_types)])
-        self.msg_fc2 = nn.ModuleList([nn.Linear(msg_hid, msg_out) for i in range(n_edge_types)])
+        self.msg_fc1 = nn.Linear(422, msg_hid)
+        self.msg_fc2 = nn.Linear(msg_hid, msg_out)
 
         self.out_fc1 = nn.Linear(msg_out, n_hid)
         self.out_fc2 = nn.Linear(n_hid,   n_hid)
@@ -220,32 +220,28 @@ class MLPDecoder(nn.Module):
         """
 
         B, N, T = inputs.size()
-        Et = len(sparse_edges)
+        Et = sparse_edges.size(2)
 
-        """
-        We get as input: X and Et adjacency matrices (in disguise)
-        We want to aggregate X according to the adj matrices (i.e. a GCN) and then use an aggregation layer for prediction
-
-        The main issue is caused by batching. This was solved previously by using block-diagonal batching. For constant graph sizes
-        we may be able to find a better way?
-        """
-
-        X = inputs.view(B*N, T)
-        X = F.relu(self.node_fc1(X))
-
-        all_agg = torch.zeros(B*N, self.msg_out, dtype=torch.float, device=X.device)
+        out_adj_mats = torch.zeros(B, 423, self.msg_out, dtype=torch.float, device=sparse_edges.device)
         for i in range(1, Et):
-            edges = torch.sparse.FloatTensor(sparse_edges[i][0], sparse_edges[i][1], sparse_edges[i][2]).to(X.device)
-            agg = torch.mm(edges, X)
-            agg = F.dropout(F.relu(self.msg_fc1[i](agg)), p=self.dropout_prob)
-            agg = torch.mm(edges, agg)
-            agg = F.dropout(F.relu(self.msg_fc2[i](agg)), p=self.dropout_prob)
-            all_agg = all_agg + agg
+            edges = sparse_edges[:,:,i].view(-1, 423, 422)
+            # Compress the reduced adjacency matrix
+            edges = self.msg_fc1(edges)
+            edges = F.relu(edges)
+            edges = F.dropout(edges, p=self.dropout_prob)
+            edges = self.msg_fc2(edges)
+            edges = F.relu(edges)
+            edges = F.dropout(edges, p=self.dropout_prob)
+
+            # Inceasingly strong contributions
+            out_adj_mats = out_adj_mats + edges * (i * 0.2)
+
+        # For final classif we can either use a convolution, which aggregatest through all nodes or an attention layer.
+        # Both should work fine! Attention layer easier to implement.
 
         # agg [B*N, msg_out]
         # Prediction MLP
-        all_agg = all_agg.view(B, N, self.msg_out)
-        pred = F.dropout(F.relu(self.out_fc1(all_agg)), p=self.dropout_prob) # B x N x F
+        pred = F.dropout(F.relu(self.out_fc1(out_adj_mats)), p=self.dropout_prob) # B x N x F
         pred = F.dropout(F.relu(self.out_fc2(pred)), p=self.dropout_prob) # B x N x F'
 
         # Node aggregation
@@ -253,3 +249,4 @@ class MLPDecoder(nn.Module):
         pred_logit = self.out_fc3(pred) # B x O
 
         return pred_logit
+
