@@ -1,5 +1,6 @@
 import os, errno
 from datetime import datetime
+import time
 
 import numpy as np
 import torch
@@ -44,18 +45,22 @@ def mkdir_p(path):
             raise
 
 
-
-def sample_gumbel(shape, eps=1e-10):
+def sample_gumbel(shape, is_cpu, eps=1e-10):
     """Sample from Gumbel(0, 1)
     """
-    U = torch.rand(shape).float()
+    if is_cpu:
+        U = torch.FloatTensor(shape).normal_()
+    else:
+        U = torch.cuda.FloatTensor(shape).normal_()
+
     return - torch.log(eps - torch.log(U + eps))
 
 
 def gumbel_softmax_sample(logits, tau=1, eps=1e-10):
     """Draw a sample from the Gumbel-Softmax distribution
     """
-    gumbel_noise = sample_gumbel(logits.size(), eps=eps).to(logits.device)
+    is_cpu = logits.device == "cpu"
+    gumbel_noise = sample_gumbel(logits.size(), is_cpu, eps=eps)
     y = logits + gumbel_noise
     return F.softmax(y / tau, dim=-1)
 
@@ -88,8 +93,8 @@ def gumbel_softmax(logits, tau=1, hard=False, eps=1e-10):
         _, k = y_soft.data.max(-1)
         # this bit is based on
         # https://discuss.pytorch.org/t/stop-gradients-for-st-gumbel-softmax/530/5
-        y_hard = torch.zeros(*shape).to(logits.device)
-        y_hard = y_hard.zero_().scatter_(-1, k.view(shape[:-1] + (1,)), 1.0)
+        y_hard = torch.zeros(*shape, device=logits.device)
+        y_hard = y_hard.scatter_(-1, k.view(shape[:-1] + (1,)), 1.0)
         # this cool bit of code achieves two things:
         # - makes the output value exactly one-hot (since we add then
         #   subtract y_soft value)

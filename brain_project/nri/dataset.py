@@ -4,8 +4,10 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 import torch.nn as nn
+from sklearn.preprocessing import StandardScaler
 
 from cache import LRUCache
+from util import time_str
 
 
 all_subjects = ['S01', 'S03', 'S04',
@@ -203,64 +205,67 @@ class EEGDataset2(Dataset):
     Note:
       The dataset has very small values (i.e. 1e-10 range). This may cause
       precision errors when using single-precision floating point numbers.
-      We therefore need to investigate normalization (0-mean, 1-var) options:
-       - spatial normalization may lose information if certain time frames
-         have less overall activity
-       - temporal normalization may lose information if certain ROIs have
-         lower/higher mean activity.
-      Otherwise one could just multiply the values by a suitably large
-      (e.g. 1e-9) number to avoid precision issues.
+      This class offers two normalization options:
+       - standardizing each ROI to 0-mean, unit variance (requires preprocessing
+         the whole dataset to extract global statistics)
+       - scaling by a large value (NORM_CONSTANT).
     """
 
-    all_normalizations = ["spat-mean",     # Make each time-frame 0 mean
-                          "spat-standard", # Standardize each time-frame
-                          "temp-mean",     # Make each ROI 0 mean
-                          "temp-standard", # Standardize each ROI
-                          "none",          # Multiply all values by 1e9
+    all_normalizations = ["standard",     # Standardize each ROI
+                          "none",         # Multiply all values by NORM_CONSTANT
+                          "val",          # Indicates that this is a validation loader so normalization is loaded from the tr loader
                           ]
+
+    NORM_CONSTANT = 1.0e10
 
     def __init__(self, data_folder, file_indices, subj_data, normalization="none"):
         """
         Args:
           data_folder : str
-          subject_list : List[str]
+            The root folder of the preprocessed data.
+          file_indices : Dict[int->int]
+            Converts linear indices useful to iterate through the dataset
+            into keys for the `subj_data` structure.
+          subj_data : dict
+            Information about the file location of each sample
           normalization : str
-          num_timepoints : int
-            The number time-points to use in each sample. Each file currently
-            holds 2501 time points, so this is the maximum (although this
-            limit may change if we get full trajectories). Lower values will
-            cause each file to be split up into multiple samples (and possibly
-            some of the last frames will be discarded).
+            The type of normalization to use for the data. This can be either
+            standard, none or val. val should only be used if this is a
+            validation dataset and the statistics are extracted from the
+            training set.
         """
         super(EEGDataset2, self).__init__()
         if normalization not in EEGDataset2.all_normalizations:
             raise ValueError(f"Normalization must be in {all_normalizations}.")
 
-        self.tot_tpoints = 2501
-        self.num_nodes = 423
         self.normalization = normalization
         self.data_folder = data_folder
 
         self.xfile_cache = LRUCache(capacity=50)
         self.yfile_cache = LRUCache(capacity=500)
         self.subj_data = subj_data
-
         self.file_indices = file_indices
 
-    def __getitem__(self, idx):
+        self.init_normalizer()
+
+    def get_xy_files(self, idx):
         idx = self.file_indices[idx]
         sdata = self.subj_data[idx]
         x_file = os.path.join(self.data_folder, "X", sdata["file"])
         y_file = os.path.join(self.data_folder, "Y", sdata["file"])
         iif = sdata["index_in_file"]
 
-        X = self.xfile_cache.load(x_file, iif)
-        Y = self.yfile_cache.load(y_file, iif)
+        return x_file, y_file, iif
 
-        # TODO: Run normalization
+    def __getitem__(self, idx):
+        x_file, y_file, iif = self.get_xy_files(idx)
+
+        X = self.xfile_cache.load(x_file, iif).transpose()
+        X = self.normalize(X)
+        Y = self.yfile_cache.load(y_file, iif) - 1  # Necessary, targets must start from 0
 
         sample = {
-            "X": torch.tensor(X.astype(np.float32).transpose()),
+            "X": torch.tensor(X, dtype=torch.float32),
             "Y": torch.tensor(Y, dtype=torch.long),
         }
         return sample
@@ -279,5 +284,40 @@ class EEGDataset2(Dataset):
 
         return batch
 
+    def init_normalizer(self):
+        if self.normalization == "val":
+            return
 
+        print(f"{time_str()} Initializing normalization ({self.normalization}) statistics.")
+        if self.normalization == "none":
+            self.scaler = None
+            return
+
+        self.scaler = StandardScaler(copy=False, with_mean=True, with_std=True)
+        # Iterate all samples to compute statistics.
+        # TODO: This can be optimized to feed the scalers all samples read from a file
+        #       but care must be taken to actually only feed it samples whose id is in
+        #       the allowed ids.
+        for i in range(len(self)):
+            x_file, y_file, iif = self.get_xy_files(i)
+            X = self.xfile_cache.load(x_file, iif).transpose()
+            self.scaler.partial_fit(X)
+
+    def normalize(self, data):
+        """
+        Args:
+         - data : array [time_steps, 423]
+
+        Returns:
+         - norm_data : array [time_steps, 423]
+        """
+        if self.normalization == "val":
+            raise ValueError("Normalization cannot be `val`, must be set to a concrete value.")
+
+        if self.normalization == "none":
+            data = data * EEGDataset2.NORM_CONSTANT
+        else:
+            data = self.scaler.transform(data)
+
+        return data.astype(np.float32)
 
