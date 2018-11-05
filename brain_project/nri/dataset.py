@@ -260,7 +260,7 @@ class EEGDataset2(Dataset):
     def __getitem__(self, idx):
         x_file, y_file, iif = self.get_xy_files(idx)
 
-        X = self.xfile_cache.load(x_file, iif).transpose()
+        X = self.xfile_cache.load(x_file, iif).transpose() # [num_nodes, time_steps]
         X = self.normalize(X)
         Y = self.yfile_cache.load(y_file, iif) - 1  # Necessary, targets must start from 0
 
@@ -306,10 +306,10 @@ class EEGDataset2(Dataset):
     def normalize(self, data):
         """
         Args:
-         - data : array [time_steps, 423]
+         - data : array [423, time_steps]
 
         Returns:
-         - norm_data : array [time_steps, 423]
+         - norm_data : array [423, time_steps]
         """
         if self.normalization == "val":
             raise ValueError("Normalization cannot be `val`, must be set to a concrete value.")
