@@ -1,4 +1,5 @@
 import os
+import argparse
 import scipy.io as sio
 import json
 import numpy as np
@@ -94,7 +95,7 @@ def prepare_timeseries_data(data_folder, subsample, sample_size, out_folder, sav
 
     for subj in os.listdir(data_folder):
         path_subj = os.path.join(data_folder, subj)
-        if subj not in ["S01", "S12"]:
+        if subj not in ["S04", "S05", "S06", "S07", "S08", "S10", "S11", "S12"]:
             continue
         if not os.path.isdir(path_subj):
             continue
@@ -159,7 +160,7 @@ def prepare_timeseries_data(data_folder, subsample, sample_size, out_folder, sav
     # Save metadata
     metadata_file = os.path.join(base_folder, "subj_data.json")
     with open(metadata_file, "w") as fh:
-        json.dump(subj_data, metadata_file)
+        json.dump(subj_data, fh)
     print(f"{time_str()} Saved subject metadata at {metadata_file}.")
 
     t2 = time.time()
