@@ -3,22 +3,27 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torch_scatter import scatter_add
-
 
 class FastEncoder(nn.Module):
 
-    def __init__(self, n_in, n_hid, n_out, do_prob):
+    def __init__(self, n_in, n_hid, n_out, do_prob, dist_type="dot"):
         super(FastEncoder, self).__init__()
 
+        if len(n_hid) != 3:
+            raise ValueError("Number of hidden layer sizes must be equal to 3!")
+
         self.edge_types = n_out
+        self.n_node_feat = n_hid[-1]
         self.dropout_prob = do_prob
+        self.distance = dist_type
 
-        self.node_fc1 = nn.Linear(n_in, n_hid)
-        self.node_fc2 = nn.Linear(n_hid, n_hid)
+        self.node_fc1 = nn.Linear(n_in, n_hid[0])
+        self.node_fc2 = nn.Linear(n_hid[0], n_hid[1])
 
-        self.spec_fc = nn.ModuleList([nn.Linear(n_hid, n_hid) for i in range(n_out)])
-        self.out_fc = nn.ModuleList([nn.Linear(n_hid, n_hid) for i in range(n_out)])
+        self.spec_fc = nn.ModuleList([nn.Linear(n_hid[1], n_hid[2]) for i in range(n_out)])
+        self.out_fc = nn.ModuleList([nn.Linear(n_hid[2], n_hid[2]) for i in range(n_out)])
+
+        self.init_distance()
 
 
     def forward(self, inputs, adj):
@@ -35,58 +40,58 @@ class FastEncoder(nn.Module):
         row, col = adj._indices()
 
         edge_predictions = torch.empty(x.size(0), row.size(0), self.edge_types,
-                                       dtype=torch.float32, device=x.device)
+                                      dtype=torch.float32, device=x.device)
         ## Single branch for each output edge type
         for i in range(self.edge_types):
             xe_curr = F.dropout(F.relu(self.spec_fc[i](x)), p=self.dropout_prob)
             xe_curr = self.out_fc[i](xe_curr) # B x N x F
             esrc = xe_curr[:,row,:] # B x E x F
             edst = xe_curr[:,col,:] # B x E x F
-            logits = self.calc_distance(esrc, edst, "dot")
-            edge_predictions[:,i] = logits
+            logits = self.calc_distance(esrc, edst)
+            edge_predictions[:,:,i] = logits
 
         return edge_predictions
 
+    def init_distance(self):
+        if self.distance == "svm":
+            self.alpha = nn.Parameter(nn.init.normal_(torch.empty(self.n_node_feat, 1, dtype=torch.float32)))
+            self.bias = nn.Parameter(nn.init.uniform_(torch.empty(1, dtype=torch.float32)))
+        elif self.distance == "squared":
+            self.W = nn.Parameter(nn.init.xavier_normal_(torch.empty(self.n_node_feat, self.n_node_feat, dtype=torch.float32)))
 
-    def calc_distance(self, e1, e2, dist_type):
-        if dist_type == "norm":
+    def calc_distance(self, e1, e2):
+        if self.distance == "norm":
             p = 2
             dist = torch.norm(e1 - e2, p=p, dim=-1)
             return dist
 
-        if dist_type == "dot":
+        if self.distance == "dot":
             # dot-product is not a distance but a similarity measure
             # (higher dot-product: higher similarity)
             sim = torch.mul(e1, e2).sum(2)
             return sim
 
-        if dist_type == "cosine":
+        if self.distance == "cosine":
             sim = F.cosine_similarity(e1, e2, 2)
             return sim
 
-        if dist_type == "svm":
-            alpha = self.model.alpha
-            bias = self.model.bias
+        if self.distance == "svm":
+            alpha = self.alpha
+            bias = self.bias
 
             dist = torch.sub(e1, e2)
             proj_dist = torch.matmul(dist, alpha) + bias
+            proj_dist = proj_dist.squeeze(2)
 
             return proj_dist
 
-        if dist_type == "squared":
-            W = self.model.W
+        if self.distance == "squared":
+            W = self.W
 
-            tempW = torch.mm(e1, W)
+            tempW = torch.matmul(e1, W)
             dist = tempW.mul(e2).sum(-1)
 
             return dist
-
-
-
-
-
-
-
 
 
 class MLP(nn.Module):
@@ -183,7 +188,9 @@ class MLPEncoder(nn.Module):
         """
         row, col = adj._indices()
         # TODO: should aggregation be on row (edge origin) or col (edge destination)?
-        incoming = scatter_add(x, col, dim=1, dim_size=adj.size(0))
+        incoming = torch.zeros(x.size(0), adj.size(0), x.size(2), dtype=torch.float32, device=x.device)
+        incoming.index_add_(1, col, x)
+        
         return incoming
 
     def node2edge(self, x, adj):
@@ -226,10 +233,11 @@ class MLPEncoder(nn.Module):
 
         if self.factor:
             x = self.edge2node(x, adj) # [num_sims, num_nodes, n_hid]
-            x = self.mlp3(x) # [num_sims, num_nodes, n_hid]
+            #x = self.mlp3(x) # [num_sims, num_nodes, n_hid]
             x = self.node2edge(x, adj) # [num_sims, num_edges, n_hid*2]
-            x = torch.cat((x, x_skip), dim=2)  # Skip connection
-            x = self.mlp4(x) # [num_sims, num_edges, n_hid]
+            x = self.mlp2(x) # [num_sims, num_edges, n_hid]
+            #x = torch.cat((x, x_skip), dim=2)  # Skip connection
+            #x = self.mlp4(x) # [num_sims, num_edges, n_hid]
         else:
             #x = self.mlp3(x)
             #x = torch.cat((x, x_skip), dim=2)  # Skip connection
