@@ -113,8 +113,9 @@ print(f"{time_str()} Initialized data loaders with {num_workers} workers and "
 
 # Generate off-diagonal interaction graph i.e. a fully connected graph
 # without self-loops.
-off_diag = np.ones([num_atoms, num_atoms]) - np.eye(num_atoms)
-adj_tensor = to_sparse(torch.tensor(off_diag.astype(np.float32)).to(device))
+# Alternative: Just the upper triangular part of the graph (without the diagonal)
+triu_mat = np.triu(np.ones([num_atoms, num_atoms]), k=1)
+adj_tensor = to_sparse(torch.tensor(triu_mat.astype(np.float32)).to(device))
 
 # Encoder
 #encoder = MLPEncoder(n_in=num_timesteps,
@@ -158,10 +159,12 @@ print(f"{time_str()} Initialized model with {tot_params} parameters:")
 
 """ Train / Validation Functions """
 
-def train(epoch):
+def train(epoch, keep_data=False):
     t = time.time()
 
     losses_kl = []; losses_rec = []
+    if keep_data:
+        data_dict = {"edges": [], "target": [], "preds": []}
 
     encoder.train()
     decoder.train()
@@ -172,24 +175,28 @@ def train(epoch):
 
         optimizer.zero_grad()
         #es = time.time()
-        logits = encoder(X, adj_tensor)
+        logits = encoder(X, adj_tensor)  # B x E x Et
         #torch.cuda.synchronize()
-        ee = time.time()
-        edges = F.gumbel_softmax(logits.view(-1, logits.size(2)), tau=temp, hard=hard).view(logits.size())
+        #ee = time.time()
+
+        edges = F.gumbel_softmax(logits.view(-1, logits.size(2)),
+                                 tau=temp, hard=hard).view(logits.size())
+
         prob = F.softmax(logits, dim=-1)
-        #ds = time.time()
-        output = decoder(X, edges)
-        #torch.cuda.synchronize()
-        #ls = time.time()
-        # ... Loss calculation wrt target ...
         loss_kl = kl_categorical(prob, log_prior, num_atoms)
 
+        #ds = time.time()
+        output = decoder(X, edges)
         # Our reconstruction loss is a bit weird, not sure what a
         # statistician would say!
         loss_rec = F.cross_entropy(output, Y, size_average=True)
+        #torch.cuda.synchronize()
+
+        #ls = time.time()
         loss = loss_kl + loss_rec
         loss.backward()
         #le = time.time()
+
         optimizer.step()
 
         #print(f"Training. Enc {ee - es:.3f} - Gumbel {ds - ee:.3f} - Dec {ls - ds:.3f} - Back {le - ls:.3f} - Tot {time.time() - es:.3f}")
@@ -197,10 +204,20 @@ def train(epoch):
         losses_kl.append(loss_kl.data.cpu().numpy())
         losses_rec.append(loss_rec.data.cpu().numpy())
 
+        if keep_data:
+            data_dict["edges"].append(edges.data.cpu().numpy())
+            data_dict["target"].append(inputs["Y"].data.cpu().numpy())
+            data_dict["preds"].append(output.data.cpu().numpy())
+
     loss_kl = np.mean(losses_kl)
     loss_rec = np.mean(losses_rec)
 
-    return loss_kl, loss_rec
+    if keep_data:
+        data_dict["target"] = np.concatenate(data_dict["target"])
+        data_dict["preds"] = np.concatenate(data_dict["preds"])
+        return loss_kl, loss_rec, data_dict
+
+    return loss_kl, loss_rec, None
 
 def validate(epoch, keep_data=False):
     t = time.time()
@@ -216,14 +233,13 @@ def validate(epoch, keep_data=False):
         Y = inputs["Y"].to(device)
 
         logits = encoder(X, adj_tensor) # batch x n_edges x n_edge_types
-        edges = F.gumbel_softmax(logits.view(-1, logits.size(2)), tau=temp, hard=hard).view(logits.size())
+        edges = F.gumbel_softmax(logits.view(-1, logits.size(2)),
+                                 tau=temp, hard=hard).view(logits.size())
         prob = F.softmax(logits, dim=-1)
 
         output = decoder(X, edges)
 
-        # ... Loss calculation wrt target ...
         loss_kl = kl_categorical(prob, log_prior, num_atoms)
-
         # Our reconstruction loss is a bit weird, not sure what a
         # statistician would say!
         loss_rec = F.cross_entropy(output, Y, size_average=True)
@@ -244,9 +260,9 @@ def validate(epoch, keep_data=False):
         data_dict["preds"] = np.concatenate(data_dict["preds"])
         return loss_kl, loss_rec, data_dict
 
-    return loss_kl, loss_rec
+    return loss_kl, loss_rec, None
 
-def training_summaries(data_dict, epoch, summary_writer):
+def training_summaries(data_dict, epoch, summary_writer, suffix="val"):
     import sklearn.metrics as metrics
 
     targets = data_dict["target"]
@@ -254,9 +270,19 @@ def training_summaries(data_dict, epoch, summary_writer):
 
     # Accuracy
     accuracy = metrics.accuracy_score(targets, preds, normalize=True)
-    print("Acc: ", accuracy)
-    summary_writer.add_scalar("accuracy", accuracy, epoch)
+    summary_writer.add_scalar(f"accuracy/{suffix}", accuracy, epoch)
 
+    # Edges
+    edges = data_dict["edges"]
+    edge_sums = np.sum(edges.view(-1, edges.shape[-1]), 0)
+    if hard:
+        edge_sums /= edges.shape[1]*edges.shape[0]
+    else:
+        edge_sums /= np.sum(edge_sums)
+    summary_writer.add_scalars(
+        f"edge_types/{suffix}",
+        {f"e{i}": edge_sums[i] for i in range(len(edge_sums))},
+        global_step=epoch)
 
 """ Training Loop """
 
@@ -268,22 +294,26 @@ for epoch in range(n_epochs):
     et = time.time()
 
     keep_data = (epoch > 0) and (epoch % plot_interval == 0)
-    tr_loss_kl, tr_loss_rec = train(epoch)
-    out_val = validate(epoch, keep_data=keep_data)
+    tr_loss_kl, tr_loss_rec, tr_data = train(epoch, keep_data=keep_data)
+    val_loss_kl, val_loss_rec, val_data = validate(epoch, keep_data=keep_data)
 
     if keep_data:
-        val_loss_kl, val_loss_rec, data_val = out_val
         st = time.time()
-        training_summaries(data_val,
+        training_summaries(tr_data,
                            epoch,
-                           summary_writer)
+                           summary_writer,
+                           suffix="tr")
+        training_summaries(val_data,
+                           epoch,
+                           summary_writer,
+                           suffix="val")
         print(f"{time_str()} Wrote summary data to tensorboard in {time.time() - st:.2f}s.")
     else:
         val_loss_kl, val_loss_rec = out_val
 
     curr_lr = scheduler.get_lr()[0]
 
-    print(f"{time_str()} Epoch {epoch} done in {time.time() - et:.2f}s - "
+    print(f"{time_str()} Epoch {epoch:4d} done in {time.time() - et:.2f}s - "
           f"lrate {curr_lr:.5f} - "
           f"KL tr {tr_loss_kl:.4f}, val {val_loss_kl:.4f} - "
           f"rec tr {tr_loss_rec:.4f}, val {val_loss_rec:.4f}.")

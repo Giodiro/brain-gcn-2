@@ -5,8 +5,44 @@ import torch.nn.functional as F
 
 
 class FastEncoder(nn.Module):
+    """Alternative to the MLP encoder. Never does feature transformations
+    on the edges, so should be a bit faster.
+    Feature transformations (via FC layers + relus and dropout) are done
+    on the nodes.
+    The node transformations are divided into 2 parts:
+     - the first is a global transformation
+     - the second is a separate transformation for every edge type required
+       in the output.
+
+    Edge logits (for each edge types) are calculated by the pairwise distance
+    between nodes. Distance calculation is thus fundamental for correct functioning
+    of this module, and we implemented many options (see `calc_distance`).
+    """
+    ALLOWED_DISTANCES = ["dot", "svm", "norm", "squared", "cosine"]
 
     def __init__(self, n_in, n_hid, n_out, do_prob, dist_type="dot"):
+        """
+        Args:
+         - n_in : int
+            Number of input features. This is typically the number of
+            time-steps in each sample.
+         - n_hid : List[int]
+            A list of three different hidden sizes. The first and second are used
+            for the first node transformation. The third is the output dimension.
+         - n_out : int
+            The number of edge types. This is the output dimension after distance
+            calculation.
+         - do_prob : float
+            Dropout probability.
+         - dist_type : str (in ALLOWED_DISTANCES)
+            The function used for distance calculation. Recommended functions are
+            "svm", "dot". "norm" and "cosine" are unlikely to work well (due to
+            normalization issues??).
+
+        Notes:
+          The output dimension is crucial for memory reasons (we will have one
+          vector of that size for each edge), so it may be good to have it small.
+        """
         super(FastEncoder, self).__init__()
 
         if len(n_hid) != 3:
@@ -15,6 +51,10 @@ class FastEncoder(nn.Module):
         self.edge_types = n_out
         self.n_node_feat = n_hid[-1]
         self.dropout_prob = do_prob
+
+        if dist_type not in FastEncoder.ALLOWED_DISTANCES:
+            raise ValueError("Distance type must be one of %s"
+                            % (FastEncoder.ALLOWED_DISTANCES))
         self.distance = dist_type
 
         self.node_fc1 = nn.Linear(n_in, n_hid[0])
@@ -23,41 +63,67 @@ class FastEncoder(nn.Module):
         self.spec_fc = nn.ModuleList([nn.Linear(n_hid[1], n_hid[2]) for i in range(n_out)])
         self.out_fc = nn.ModuleList([nn.Linear(n_hid[2], n_hid[2]) for i in range(n_out)])
 
-        self.init_distance()
-
+        self._init_distance()
+        self._init_weights()
 
     def forward(self, inputs, adj):
-        # Predict edge logits by using node similarity after a NN branch (1 for each edge)
+        """Run the model for an input batch.
+        Args:
+         - inputs : tensor [B, N, T]
+         - adj : sparse tensor [N, N]
+            This is a fully-connected graph (number of edges `E = nnz(adj)`)
+        Returns:
+         - edge_predictions : tensor [B, E, F]
+            The number of edges depends on the number of non-zero elements
+            of `adj`.
 
-        # Input shape: [num_sims, num_atoms, num_timesteps, num_dims]
-        x = inputs.view(inputs.size(0), inputs.size(1), -1)
-        # New shape: [num_sims, num_atoms, num_timesteps*num_dims]
+        Notes:
+          We define the dimensions used here: B is the batch size;
+          N is the number of nodes; T is the number of time-steps;
+          E is the number of edges and F is the number of edge types.
+        """
+        x = inputs
 
         ## Transform the node features
-        x = F.dropout(F.relu(self.node_fc1(x)), p=self.dropout_prob)  # [num_sims, num_atoms, n_hid]
-        x = F.dropout(F.relu(self.node_fc2(x)), p=self.dropout_prob)  # [num_sims, num_atoms, n_hid]
+        x = F.dropout(F.relu(self.node_fc1(x)), p=self.dropout_prob)  # [B, N, H0]
+        x = F.dropout(F.relu(self.node_fc2(x)), p=self.dropout_prob)  # [B, N, H1]
 
+        # This gives us the number of edges (row: edge source, col: edge destination).
         row, col = adj._indices()
 
         edge_predictions = torch.empty(x.size(0), row.size(0), self.edge_types,
                                       dtype=torch.float32, device=x.device)
         ## Single branch for each output edge type
         for i in range(self.edge_types):
-            xe_curr = F.dropout(F.relu(self.spec_fc[i](x)), p=self.dropout_prob)
-            xe_curr = self.out_fc[i](xe_curr) # B x N x F
-            esrc = xe_curr[:,row,:] # B x E x F
-            edst = xe_curr[:,col,:] # B x E x F
-            logits = self.calc_distance(esrc, edst)
+            xe_curr = F.dropout(F.relu(self.spec_fc[i](x)), p=self.dropout_prob) # [B, N, H2]
+            xe_curr = self.out_fc[i](xe_curr) # [B, N, H3]
+            esrc = xe_curr[:,row,:] # [B, E, H3]
+            edst = xe_curr[:,col,:] # [B, E, H3]
+            logits = self.calc_distance(esrc, edst) # [B, E]
             edge_predictions[:,:,i] = logits
 
-        return edge_predictions
+        return edge_predictions # [B, E, F]
 
-    def init_distance(self):
+    def _init_distance(self):
         if self.distance == "svm":
-            self.alpha = nn.Parameter(nn.init.normal_(torch.empty(self.n_node_feat, 1, dtype=torch.float32)))
-            self.bias = nn.Parameter(nn.init.uniform_(torch.empty(1, dtype=torch.float32)))
+            self.alpha = nn.Parameter(nn.init.normal_(
+                torch.empty(self.n_node_feat, 1, dtype=torch.float32),
+                std=0.02))
+            self.bias = nn.Parameter(nn.init.uniform_(
+                torch.empty(1, dtype=torch.float32)))
         elif self.distance == "squared":
-            self.W = nn.Parameter(nn.init.xavier_normal_(torch.empty(self.n_node_feat, self.n_node_feat, dtype=torch.float32)))
+            self.W = nn.Parameter(nn.init.xavier_normal_(
+                torch.empty(self.n_node_feat, self.n_node_feat, dtype=torch.float32)))
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight.data)
+                if m.bias is not None:
+                    m.bias.data.fill_(0.1)
+            elif isinstance(m, nn.BatchNorm1d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
 
     def calc_distance(self, e1, e2):
         if self.distance == "norm":
@@ -190,7 +256,7 @@ class MLPEncoder(nn.Module):
         # TODO: should aggregation be on row (edge origin) or col (edge destination)?
         incoming = torch.zeros(x.size(0), adj.size(0), x.size(2), dtype=torch.float32, device=x.device)
         incoming.index_add_(1, col, x)
-        
+
         return incoming
 
     def node2edge(self, x, adj):
