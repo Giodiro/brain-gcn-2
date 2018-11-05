@@ -28,7 +28,8 @@ else:
 # Unused
 orig_data_folder = "/nfs/nas12.ethz.ch/fs1201/infk_jbuhmann_project_leonhard/cardioml/"
 # Where to fetch the data from
-data_folder = "/local/home/gmeanti/cardioml/dataset2/subsample10_size250_batch64"
+#data_folder = "/local/home/gmeanti/cardioml/dataset2/subsample10_size250_batch64"
+data_folder = "/cluster/home/gmeanti/cardioml/dataset2/subsample10_size250_batch64"
 # Where to store tensorboard logs
 log_path = "gen_data/logs/"
 # Subject list is used to restrict loaded data to just the listed subjects.
@@ -55,7 +56,7 @@ lr_decay = 0.7
 n_epochs = 1000
 plot_interval = 2
 
-encoder_hidden = 64#[32, 64, 32]
+encoder_hidden = [32, 64, 32]
 prior = np.array([0.94, 0.02, 0.02, 0.02])
 n_edge_types = len(prior)
 dropout = 0.1
@@ -185,7 +186,7 @@ def train(epoch):
 
         # Our reconstruction loss is a bit weird, not sure what a
         # statistician would say!
-        loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
+        loss_rec = F.cross_entropy(output, Y, size_average=True)
         loss = loss_kl + loss_rec
         loss.backward()
         #le = time.time()
@@ -225,7 +226,7 @@ def validate(epoch, keep_data=False):
 
         # Our reconstruction loss is a bit weird, not sure what a
         # statistician would say!
-        loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
+        loss_rec = F.cross_entropy(output, Y, size_average=True)
 
         losses_kl.append(loss_kl.data.cpu().numpy())
         losses_rec.append(loss_rec.data.cpu().numpy())
