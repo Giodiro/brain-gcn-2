@@ -28,12 +28,12 @@ else:
 # Unused
 orig_data_folder = "/nfs/nas12.ethz.ch/fs1201/infk_jbuhmann_project_leonhard/cardioml/"
 # Where to fetch the data from
-data_folder = "/local/home/gmeanti/cardioml/dataset2/subsample5_size250_batch32"
+data_folder = "/local/home/gmeanti/cardioml/dataset2/subsample10_size250_batch64"
 # Where to store tensorboard logs
 log_path = "gen_data/logs/"
 # Subject list is used to restrict loaded data to just the listed subjects.
-subject_list = ["S01", "S02"]
-# This must be implemented in the dataset class (TODO)
+subject_list = ["S04"]
+# This must be implemented in the dataset class
 normalization = "standard"
 # The number of nodes in each graph.
 num_atoms = 423
@@ -41,12 +41,12 @@ num_atoms = 423
 num_timesteps = 250
 
 # Temperature of the gumbel-softmax approximation
-temp = 0.2
-# Whether to use the hard one-hot version (TODO: need to check if it actually works).
-hard = False
+temp = 0.5
+# Whether to use the hard one-hot version
+hard = True
 
 # Batch size
-batch_size = 16
+batch_size = 8
 # Learning rate
 lr = 0.001
 # rate of exponential decay for the learning rate (applied each epoch)
@@ -55,11 +55,12 @@ lr_decay = 0.7
 n_epochs = 1000
 plot_interval = 2
 
-encoder_hidden = 32
+encoder_hidden = 64#[32, 64, 32]
 prior = np.array([0.94, 0.02, 0.02, 0.02])
 n_edge_types = len(prior)
 dropout = 0.1
-factor = False
+factor = True
+enc_dist_type = "svm"
 
 decoder_hidden1 = 32
 decoder_hidden2 = 64
@@ -83,7 +84,7 @@ print(f"{time_str()} Subject data contains {len(subj_data)} samples coming "
       f"{len(tr_indices)} chosen for training and {len(val_indices)} "
       f"for testing.")
 
-num_workers = 3
+num_workers = 2
 tr_dataset = EEGDataset2(data_folder, tr_indices, subj_data, normalization)
 val_dataset = EEGDataset2(data_folder, val_indices, subj_data, normalization="val")
 # Normalization statistics should only be computed on the training set.
@@ -115,15 +116,16 @@ off_diag = np.ones([num_atoms, num_atoms]) - np.eye(num_atoms)
 adj_tensor = to_sparse(torch.tensor(off_diag.astype(np.float32)).to(device))
 
 # Encoder
-# encoder = MLPEncoder(n_in=num_timesteps,
-#                      n_hid=encoder_hidden,
-#                      n_out=n_edge_types,
-#                      do_prob=dropout,
-#                      factor=factor)
+#encoder = MLPEncoder(n_in=num_timesteps,
+#                     n_hid=encoder_hidden,
+#                     n_out=n_edge_types,
+#                     do_prob=dropout,
+#                     factor=factor)
 encoder = FastEncoder(n_in=num_timesteps,
                       n_hid=encoder_hidden,
                       n_out=n_edge_types,
-                      do_prob=dropout)
+                      do_prob=dropout,
+                      dist_type=enc_dist_type)
 encoder.to(device)
 
 # Prior
@@ -168,14 +170,16 @@ def train(epoch):
         Y = inputs["Y"].to(device)
 
         optimizer.zero_grad()
-        es = time.time()
+        #es = time.time()
         logits = encoder(X, adj_tensor)
+        #torch.cuda.synchronize()
         ee = time.time()
         edges = F.gumbel_softmax(logits.view(-1, logits.size(2)), tau=temp, hard=hard).view(logits.size())
         prob = F.softmax(logits, dim=-1)
-        ds = time.time()
+        #ds = time.time()
         output = decoder(X, edges)
-        ls = time.time()
+        #torch.cuda.synchronize()
+        #ls = time.time()
         # ... Loss calculation wrt target ...
         loss_kl = kl_categorical(prob, log_prior, num_atoms)
 
@@ -184,10 +188,10 @@ def train(epoch):
         loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
         loss = loss_kl + loss_rec
         loss.backward()
-        le = time.time()
+        #le = time.time()
         optimizer.step()
 
-        print(f"Training. Enc {ee - es:.3f} - Gumbel {ds - ee:.3f} - Dec {ls - ds:.3f} - Back {le - ls:.3f} - Tot {time.time() - es:.3f}")
+        #print(f"Training. Enc {ee - es:.3f} - Gumbel {ds - ee:.3f} - Dec {ls - ds:.3f} - Back {le - ls:.3f} - Tot {time.time() - es:.3f}")
 
         losses_kl.append(loss_kl.data.cpu().numpy())
         losses_rec.append(loss_rec.data.cpu().numpy())
@@ -279,9 +283,9 @@ for epoch in range(n_epochs):
     curr_lr = scheduler.get_lr()[0]
 
     print(f"{time_str()} Epoch {epoch} done in {time.time() - et:.2f}s - "
-          f"lrate {curr_lr} - "
-          f"KL tr {tr_loss_kl:.3f}, val {val_loss_kl:.3f} - "
-          f"rec tr {tr_loss_rec:.3f}, val {val_loss_rec:.3f}.")
+          f"lrate {curr_lr:.5f} - "
+          f"KL tr {tr_loss_kl:.4f}, val {val_loss_kl:.4f} - "
+          f"rec tr {tr_loss_rec:.4f}, val {val_loss_rec:.4f}.")
 
 print(f"{time_str()} Finished training. Exiting.")
 
