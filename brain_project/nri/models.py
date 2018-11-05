@@ -348,7 +348,7 @@ class MLPDecoder(nn.Module):
         self.msg_out = msg_out
 
         # triu indices
-        self.triu_indices = np.triu_indices(423, k=1)
+        self.triu_indices = [torch.from_numpy(t).long() for t in np.triu_indices(423, k=1)]
 
         # Message passing
         self.msg_fc1 = nn.Linear(423, msg_hid)
@@ -366,6 +366,11 @@ class MLPDecoder(nn.Module):
                 nn.init.xavier_normal_(m.weight.data)
                 m.bias.data.fill_(0.1)
 
+    def to(self, device):
+        super().to(device)
+        self.triu_indices[0] = self.triu_indices[0].to(device)
+        self.triu_indices[1] = self.triu_indices[1].to(device)
+
     def forward(self, inputs, sparse_edges):
         """
         Args:
@@ -382,10 +387,11 @@ class MLPDecoder(nn.Module):
         B, N, T = inputs.size()
         Et = sparse_edges.size(2)
 
-        out_adj_mats = torch.zeros(B, 423, self.msg_out, dtype=torch.float, device=sparse_edges.device)
+        out_adj_mats = torch.zeros(B, 423, self.msg_out, dtype=torch.float, device=inputs.device)
         for i in range(1, Et):
-            edges = torch.empty(B, 423, 423, dtype=torch.float32).to(inputs.device)
-            edges[:,self.triu_indices] = sparse_edges[:,:,i]
+            edges = torch.empty(B, 423, 423, dtype=torch.float32, device=inputs.device)
+            edges[:,self.triu_indices[0], self.triu_indices[1]] = sparse_edges[:,:,i]
+            edges = edges + edges.transpose(1, 2)
             #edges = sparse_edges[:,:,i].view(-1, 423, 422)
             # Compress the reduced adjacency matrix
             edges = self.msg_fc1(edges)
