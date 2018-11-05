@@ -347,8 +347,11 @@ class MLPDecoder(nn.Module):
         self.dropout_prob = dropout_prob
         self.msg_out = msg_out
 
+        # triu indices
+        self.triu_indices = np.triu_indices(423, k=1)
+
         # Message passing
-        self.msg_fc1 = nn.Linear(422, msg_hid)
+        self.msg_fc1 = nn.Linear(423, msg_hid)
         self.msg_fc2 = nn.Linear(msg_hid, msg_out)
 
         self.out_fc1 = nn.Linear(msg_out, n_hid)
@@ -381,7 +384,9 @@ class MLPDecoder(nn.Module):
 
         out_adj_mats = torch.zeros(B, 423, self.msg_out, dtype=torch.float, device=sparse_edges.device)
         for i in range(1, Et):
-            edges = sparse_edges[:,:,i].view(-1, 423, 422)
+            edges = torch.empty(B, 423, 423, dtype=torch.float32).to(inputs.device)
+            edges[:,self.triu_indices] = sparse_edges[:,:,i]
+            #edges = sparse_edges[:,:,i].view(-1, 423, 422)
             # Compress the reduced adjacency matrix
             edges = self.msg_fc1(edges)
             edges = F.relu(edges)

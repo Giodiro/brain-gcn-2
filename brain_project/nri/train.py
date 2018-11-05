@@ -13,7 +13,7 @@ import torch.optim.lr_scheduler as lr_scheduler
 from tensorboardX import SummaryWriter
 from dataset import EEGDataset2
 from data_utils import split_within_subj
-from util import time_str, mkdir_p, kl_categorical, gumbel_softmax, safe_time_str, encode_onehot
+from util import time_str, mkdir_p, kl_categorical, safe_time_str, encode_onehot
 from sparse_util import to_sparse, block_diag_from_ivs_torch
 from models import MLPEncoder, MLPDecoder, FastEncoder
 
