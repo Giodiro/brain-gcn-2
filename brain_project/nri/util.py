@@ -51,7 +51,7 @@ def kl_categorical(preds, log_prior, num_atoms, eps=1e-16):
     return kl_div.sum() / (num_atoms * preds.size(0))
 
 
-def plot_confusion_matrix(self, ytrue, ypred, class_names, normalize=True):
+def plot_confusion_matrix(ytrue, ypred, class_names, normalize=True):
     from sklearn import metrics
     import matplotlib.pyplot as plt
 

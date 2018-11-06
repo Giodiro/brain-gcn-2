@@ -10,6 +10,10 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from tensorboardX import SummaryWriter
 import dataset
 from dataset import EEGDataset2
@@ -43,9 +47,9 @@ num_atoms = 423
 num_timesteps = 250
 
 # Temperature of the gumbel-softmax approximation
-temp = 0.2
+temp = 0.5
 # Whether to use the hard one-hot version
-hard = False
+hard = True
 
 # Batch size
 batch_size = 10
@@ -182,32 +186,21 @@ def train(epoch, keep_data=False):
         Y = inputs["Y"].to(device)
 
         optimizer.zero_grad()
-        #es = time.time()
         logits = encoder(X, adj_tensor)  # B x E x Et
-        #torch.cuda.synchronize()
-        #ee = time.time()
-
         edges = F.gumbel_softmax(logits.view(-1, logits.size(2)),
                                  tau=temp, hard=hard).view(logits.size())
 
         prob = F.softmax(logits, dim=-1)
         loss_kl = kl_categorical(prob, log_prior, num_atoms)
 
-        #ds = time.time()
         output = decoder(X, edges)
         # Our reconstruction loss is a bit weird, not sure what a
         # statistician would say!
         loss_rec = F.cross_entropy(output, Y, size_average=True)
-        #torch.cuda.synchronize()
 
-        #ls = time.time()
         loss = loss_kl + loss_rec
         loss.backward()
-        #le = time.time()
-
         optimizer.step()
-
-        #print(f"Training. Enc {ee - es:.3f} - Gumbel {ds - ee:.3f} - Dec {ls - ds:.3f} - Back {le - ls:.3f} - Tot {time.time() - es:.3f}")
 
         losses_kl.append(loss_kl.data.cpu().numpy())
         losses_rec.append(loss_rec.data.cpu().numpy())
@@ -289,7 +282,7 @@ def training_summaries(data_dict, epoch, summary_writer, suffix="val"):
     # Edges (bar-chart)
     edges = data_dict["edges"]
     edges = edges.reshape(-1, edges.shape[-1])
-    edge_sums = np.sum(edges, axis=0)
+    edge_sums = np.sum(edges, axis=0) / edges.shape[0]
 
     fig, ax = plt.subplots()
     ax.bar(
