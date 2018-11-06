@@ -78,10 +78,13 @@ model_name = (f"NRIClassif{safe_time_str()}_enc{encoder_hidden}_"
 with open(os.path.join(data_folder, "subj_data.json"), "r") as fh:
     subj_data = json.load(fh)
 
-tr_indices, val_indices = split_within_subj(subject_list, subj_data)
 print(f"{time_str()} Subject data contains {len(subj_data)} samples coming "
-      f"from subjects {set(v['subj'] for v in subj_data.values())}.\n"
-      f"{len(tr_indices)} chosen for training and {len(val_indices)} "
+      f"from subjects {set(v['subj'] for v in subj_data.values())}.")
+
+tr_indices, val_indices = split_within_subj(subject_list, subj_data)
+
+print(f"{time_str()} After restricting to {subject_list} we have"
+      f"{len(tr_indices)} for training and {len(val_indices)} "
       f"for testing.")
 
 num_workers = 2
