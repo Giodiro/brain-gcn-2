@@ -13,7 +13,7 @@ import torch.optim.lr_scheduler as lr_scheduler
 from tensorboardX import SummaryWriter
 from dataset import EEGDataset2
 from data_utils import split_within_subj
-from util import time_str, mkdir_p, kl_categorical, gumbel_softmax, safe_time_str, encode_onehot
+from util import time_str, mkdir_p, kl_categorical, safe_time_str, encode_onehot
 from sparse_util import to_sparse, block_diag_from_ivs_torch
 from models import MLPEncoder, MLPDecoder, FastEncoder
 
@@ -28,7 +28,8 @@ else:
 # Unused
 orig_data_folder = "/nfs/nas12.ethz.ch/fs1201/infk_jbuhmann_project_leonhard/cardioml/"
 # Where to fetch the data from
-data_folder = "/local/home/gmeanti/cardioml/dataset2/subsample10_size250_batch64"
+#data_folder = "/local/home/gmeanti/cardioml/dataset2/subsample10_size250_batch64"
+data_folder = "/cluster/home/gmeanti/cardioml/dataset2/subsample10_size250_batch64"
 # Where to store tensorboard logs
 log_path = "gen_data/logs/"
 # Subject list is used to restrict loaded data to just the listed subjects.
@@ -55,7 +56,7 @@ lr_decay = 0.7
 n_epochs = 1000
 plot_interval = 2
 
-encoder_hidden = 64#[32, 64, 32]
+encoder_hidden = [32, 64, 32]
 prior = np.array([0.94, 0.02, 0.02, 0.02])
 n_edge_types = len(prior)
 dropout = 0.1
@@ -189,7 +190,9 @@ def train(epoch, keep_data=False):
 
         #ds = time.time()
         output = decoder(X, edges)
-        loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
+        # Our reconstruction loss is a bit weird, not sure what a
+        # statistician would say!
+        loss_rec = F.cross_entropy(output, Y, size_average=True)
         #torch.cuda.synchronize()
 
         #ls = time.time()
@@ -240,7 +243,9 @@ def validate(epoch, keep_data=False):
         output = decoder(X, edges)
 
         loss_kl = kl_categorical(prob, log_prior, num_atoms)
-        loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
+        # Our reconstruction loss is a bit weird, not sure what a
+        # statistician would say!
+        loss_rec = F.cross_entropy(output, Y, size_average=True)
 
         losses_kl.append(loss_kl.data.cpu().numpy())
         losses_rec.append(loss_rec.data.cpu().numpy())
