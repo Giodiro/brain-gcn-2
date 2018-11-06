@@ -11,9 +11,10 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 
 from tensorboardX import SummaryWriter
+import dataset
 from dataset import EEGDataset2
 from data_utils import split_within_subj
-from util import time_str, mkdir_p, kl_categorical, safe_time_str, encode_onehot
+from util import (time_str, mkdir_p, kl_categorical, safe_time_str, encode_onehot, plot_confusion_matrix)
 from sparse_util import to_sparse, block_diag_from_ivs_torch
 from models import MLPEncoder, MLPDecoder, FastEncoder
 
@@ -33,7 +34,7 @@ data_folder = "/cluster/home/gmeanti/cardioml/dataset2/subsample10_size250_batch
 # Where to store tensorboard logs
 log_path = "gen_data/logs/"
 # Subject list is used to restrict loaded data to just the listed subjects.
-subject_list = ["S04"]
+subject_list = ["S04", "S05", "S06", "S07", "S08"]
 # This must be implemented in the dataset class
 normalization = "standard"
 # The number of nodes in each graph.
@@ -47,7 +48,7 @@ temp = 0.5
 hard = True
 
 # Batch size
-batch_size = 8
+batch_size = 16
 # Learning rate
 lr = 0.001
 # rate of exponential decay for the learning rate (applied each epoch)
@@ -216,8 +217,11 @@ def train(epoch, keep_data=False):
     loss_rec = np.mean(losses_rec)
 
     if keep_data:
+        data_dict["edges"] = np.concatenate(data_dict["edges"])
         data_dict["target"] = np.concatenate(data_dict["target"])
         data_dict["preds"] = np.concatenate(data_dict["preds"])
+        data_dict["KL_loss"] = loss_kl
+        data_dict["rec_loss"] = loss_rec
         return loss_kl, loss_rec, data_dict
 
     return loss_kl, loss_rec, None
@@ -259,8 +263,11 @@ def validate(epoch, keep_data=False):
     loss_rec = np.mean(losses_rec)
 
     if keep_data:
+        data_dict["edges"] = np.concatenate(data_dict["edges"])
         data_dict["target"] = np.concatenate(data_dict["target"])
         data_dict["preds"] = np.concatenate(data_dict["preds"])
+        data_dict["KL_loss"] = loss_kl
+        data_dict["rec_loss"] = loss_rec
         return loss_kl, loss_rec, data_dict
 
     return loss_kl, loss_rec, None
@@ -275,17 +282,29 @@ def training_summaries(data_dict, epoch, summary_writer, suffix="val"):
     accuracy = metrics.accuracy_score(targets, preds, normalize=True)
     summary_writer.add_scalar(f"accuracy/{suffix}", accuracy, epoch)
 
-    # Edges
-    edges = data_dict["edges"]
-    edge_sums = np.sum(edges.view(-1, edges.shape[-1]), 0)
-    if hard:
-        edge_sums /= edges.shape[1]*edges.shape[0]
-    else:
-        edge_sums /= np.sum(edge_sums)
-    summary_writer.add_scalars(
-        f"edge_types/{suffix}",
-        {f"e{i}": edge_sums[i] for i in range(len(edge_sums))},
-        global_step=epoch)
+    # Edges (bar-chart)
+    edges = data_dict["edges"].reshape(-1, edges.shape[-1])
+    edge_sums = np.sum(edges, axis=0)
+
+    fig, ax = plt.subplots()
+    ax.bar(
+        np.arange(len(edge_sums)),
+        edge_sums,
+        align="center",
+        alpha=0.7)
+    ax.set_xticks(np.arange(len(edge_sums)))
+    ax.set_xticklabels(["E%d" % i for i in range(len(edge_sums))])
+
+    summary_writer.add_figure(f"edge_types/{suffix}", fig, epoch, close=True)
+
+    # Losses
+    summary_writer.add_scalar(f"KL_loss/{suffix}", data_dict["KL_loss"], epoch)
+    summary_writer.add_scalar(f"cross_entropy_loss/{suffix}", data_dict["rec_loss"], epoch)
+
+    # Confusion matrix
+    fig = plot_confusion_matrix(targets, preds, dataset.class_names)
+    summary_writer.add_figure(f"conf_mat/{suffix}", fig, epoch, close=True)
+
 
 """ Training Loop """
 
@@ -311,8 +330,6 @@ for epoch in range(n_epochs):
                            summary_writer,
                            suffix="val")
         print(f"{time_str()} Wrote summary data to tensorboard in {time.time() - st:.2f}s.")
-    else:
-        val_loss_kl, val_loss_rec = out_val
 
     curr_lr = scheduler.get_lr()[0]
 

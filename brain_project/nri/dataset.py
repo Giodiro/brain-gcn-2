@@ -18,6 +18,7 @@ all_phases = {"REM_phasic": 1, "REM_tonic": 2,
               "S2_Kcomplex": 3, "S2_plain": 4,
               "S2_spindle": 5, "SWS_deep": 6
              }
+class_names = ["REM_phasic", "REM_tonic", "S2_Kcomplex", "S2_plain", "S2_spindle", "SWS_deep"]
 
 
 class EEG_Dataset1(Dataset):
