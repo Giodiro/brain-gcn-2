@@ -14,7 +14,7 @@ from tensorboardX import SummaryWriter
 import dataset
 from dataset import EEGDataset2
 from data_utils import split_within_subj
-from util import (time_str, mkdir_p, kl_categorical, safe_time_str, encode_onehot, plot_confusion_matrix)
+from util import (time_str, mkdir_p, kl_categorical, safe_time_str, encode_onehot, plot_confusion_matrix, list_to_safe_str)
 from sparse_util import to_sparse, block_diag_from_ivs_torch
 from models import MLPEncoder, MLPDecoder, FastEncoder
 
@@ -43,16 +43,16 @@ num_atoms = 423
 num_timesteps = 250
 
 # Temperature of the gumbel-softmax approximation
-temp = 0.5
+temp = 0.2
 # Whether to use the hard one-hot version
-hard = True
+hard = False
 
 # Batch size
-batch_size = 16
+batch_size = 10
 # Learning rate
 lr = 0.001
 # rate of exponential decay for the learning rate (applied each epoch)
-lr_decay = 0.7
+lr_decay = 0.95
 # Maximum number of epochs to run for
 n_epochs = 1000
 plot_interval = 2
@@ -61,7 +61,7 @@ encoder_hidden = [32, 64, 32]
 prior = np.array([0.94, 0.02, 0.02, 0.02])
 n_edge_types = len(prior)
 dropout = 0.1
-factor = True
+factor = False
 enc_dist_type = "svm"
 
 decoder_hidden1 = 32
@@ -71,8 +71,12 @@ decoder_out = 16
 n_classes = 6
 
 
-model_name = (f"NRIClassif{safe_time_str()}_enc{encoder_hidden}_"
-              f"dout{dropout}_factor{factor}")
+model_name = (f"NRIClassif{safe_time_str()}_"
+              f"enc{list_to_safe_str(encoder_hidden)}_"
+              f"dout{dropout}_factor{factor}_"
+              f"hard{hard}_temp{temp}_"
+              f"dist_type{enc_dist_type}_"
+              f"dec{list_to_safe_str([decoder_hidden1, decoder_hidden2, decoder_out])}")
 
 
 """ Data Loading """
@@ -283,7 +287,8 @@ def training_summaries(data_dict, epoch, summary_writer, suffix="val"):
     summary_writer.add_scalar(f"accuracy/{suffix}", accuracy, epoch)
 
     # Edges (bar-chart)
-    edges = data_dict["edges"].reshape(-1, edges.shape[-1])
+    edges = data_dict["edges"]
+    edges = edges.reshape(-1, edges.shape[-1])
     edge_sums = np.sum(edges, axis=0)
 
     fig, ax = plt.subplots()
