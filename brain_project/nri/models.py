@@ -92,7 +92,7 @@ class FastEncoder(nn.Module):
         row, col = adj._indices()
 
         edge_predictions = torch.empty(x.size(0), row.size(0), self.edge_types,
-                                      dtype=torch.float32, device=x.device)
+                                       dtype=torch.float32, device=x.device)
         ## Single branch for each output edge type
         for i in range(self.edge_types):
             xe_curr = F.dropout(F.relu(self.spec_fc[i](x)), p=self.dropout_prob) # [B, N, H2]
@@ -313,12 +313,12 @@ class MLPEncoder(nn.Module):
         return self.fc_out(x) # [num_sims, num_edges, n_out]
 
 
-
 class MLPDecoder(nn.Module):
     def __init__(
         self,
         n_in : int,
         n_edge_types : int,
+        n_atoms : int,
         msg_hid : int,
         msg_out : int,
         n_hid : int,
@@ -348,10 +348,10 @@ class MLPDecoder(nn.Module):
         self.msg_out = msg_out
 
         # triu indices
-        self.triu_indices = [torch.from_numpy(t).long() for t in np.triu_indices(423, k=1)]
+        self.triu_indices = [torch.from_numpy(t).long() for t in np.triu_indices(n_atoms, k=1)]
 
         # Message passing
-        self.msg_fc1 = nn.Linear(423, msg_hid)
+        self.msg_fc1 = nn.Linear(n_atoms, msg_hid)
         self.msg_fc2 = nn.Linear(msg_hid, msg_out)
 
         self.out_fc1 = nn.Linear(msg_out, n_hid)
@@ -387,9 +387,9 @@ class MLPDecoder(nn.Module):
         B, N, T = inputs.size()
         Et = sparse_edges.size(2)
 
-        out_adj_mats = torch.zeros(B, 423, self.msg_out, dtype=torch.float, device=inputs.device)
+        out_adj_mats = torch.zeros(B, N, self.msg_out, dtype=torch.float, device=inputs.device)
         for i in range(1, Et):
-            edges = torch.empty(B, 423, 423, dtype=torch.float32, device=inputs.device)
+            edges = torch.zeros(B, N, N, dtype=torch.float32, device=inputs.device)
             edges[:,self.triu_indices[0], self.triu_indices[1]] = sparse_edges[:,:,i]
             edges = edges + edges.transpose(1, 2)
             #edges = sparse_edges[:,:,i].view(-1, 423, 422)

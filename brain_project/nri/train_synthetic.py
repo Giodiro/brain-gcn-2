@@ -13,11 +13,13 @@ import torch.optim.lr_scheduler as lr_scheduler
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from sklearn import model_selection
 
 from tensorboardX import SummaryWriter
 import dataset
-from dataset import EEGDataset2
+from dataset import EEGDataset2, SyntheticDataset
 from data_utils import split_within_subj
+from synthetic_data import gen_synthetic_tseries
 from util import (time_str, mkdir_p, kl_categorical, safe_time_str, encode_onehot, plot_confusion_matrix, list_to_safe_str)
 from sparse_util import to_sparse, block_diag_from_ivs_torch
 from models import MLPEncoder, MLPDecoder, FastEncoder
@@ -30,21 +32,19 @@ if torch.cuda.is_available():
 else:
     device = "cpu"
 
-# Unused
-orig_data_folder = "/nfs/nas12.ethz.ch/fs1201/infk_jbuhmann_project_leonhard/cardioml/"
-# Where to fetch the data from
-#data_folder = "/local/home/gmeanti/cardioml/dataset2/subsample10_size250_batch64"
-data_folder = "/cluster/home/gmeanti/cardioml/dataset2/subsample10_size250_batch64"
+# Number of class labels
+num_clusters = 3
+# Number of timesteps to be generated for each cluster
+total_timesteps = 10000
+
 # Where to store tensorboard logs
 log_path = "gen_data/logs/"
-# Subject list is used to restrict loaded data to just the listed subjects.
-subject_list = ["S04", "S05", "S06", "S07", "S08"]
 # This must be implemented in the dataset class
-normalization = "standard"
+normalization = "none"
 # The number of nodes in each graph.
-num_atoms = 423
+num_atoms = 5
 # The number of time-steps per sample (this depends on the preprocessing).
-num_timesteps = 250
+num_timesteps = 16
 
 # Temperature of the gumbel-softmax approximation
 temp = 0.5
@@ -52,27 +52,26 @@ temp = 0.5
 hard = True
 
 # Batch size
-batch_size = 10
+batch_size = 12
 # Learning rate
-lr = 0.001
+lr = 0.0001
 # rate of exponential decay for the learning rate (applied each epoch)
-lr_decay = 0.99
+lr_decay = 0.95
 # Maximum number of epochs to run for
 n_epochs = 1000
 plot_interval = 2
 
-encoder_hidden = [128, 64, 28]
-prior = np.array([0.991, 0.003, 0.003, 0.003])
+encoder_hidden = [16, 32, 16]
+# Here we choose the prior based on edge_prob
+prior = np.array([0.8, 0.1, 0.1])
 n_edge_types = len(prior)
 dropout = 0.1
 factor = False
 enc_dist_type = "svm"
 
-decoder_hidden1 = 64
+decoder_hidden1 = 32
 decoder_hidden2 = 32
 decoder_out = 16
-
-n_classes = 6
 
 
 model_name = (f"NRIClassif{safe_time_str()}_"
@@ -85,21 +84,25 @@ model_name = (f"NRIClassif{safe_time_str()}_"
 
 """ Data Loading """
 
-with open(os.path.join(data_folder, "subj_data.json"), "r") as fh:
-    subj_data = json.load(fh)
+# Generate the data
+print(f"{time_str()} Generating synthetic data.")
+samples, labels = gen_synthetic_tseries(num_clusters=num_clusters,
+                                        num_tsteps=total_timesteps,
+                                        sample_size=num_timesteps,
+                                        num_nodes=num_atoms,
+                                        edge_prob=0.2)
 
-print(f"{time_str()} Subject data contains {len(subj_data)} samples coming "
-      f"from subjects {set(v['subj'] for v in subj_data.values())}.")
+# Split the data between train / test
+splitting = model_selection.train_test_split(
+    samples, labels, test_size=0.2, stratify=labels)
+x_train, x_test, y_train, y_test = splitting
 
-tr_indices, val_indices = split_within_subj(subject_list, subj_data)
-
-print(f"{time_str()} After restricting to {subject_list} we have"
-      f"{len(tr_indices)} for training and {len(val_indices)} "
+print(f"{time_str()} After splitting we have "
+      f"{len(x_train)} samples for training and {len(x_test)} "
       f"for testing.")
 
-num_workers = 2
-tr_dataset = EEGDataset2(data_folder, tr_indices, subj_data, normalization)
-val_dataset = EEGDataset2(data_folder, val_indices, subj_data, normalization="val")
+tr_dataset = SyntheticDataset(x_train, y_train, normalization)
+val_dataset = SyntheticDataset(x_test, y_test, normalization="val")
 # Normalization statistics should only be computed on the training set.
 val_dataset.normalization = tr_dataset.normalization
 val_dataset.scaler = tr_dataset.scaler
@@ -107,19 +110,19 @@ val_dataset.scaler = tr_dataset.scaler
 tr_loader = data.DataLoader(tr_dataset,
                             shuffle=True,
                             batch_size=batch_size,
-                            num_workers=num_workers,
-                            collate_fn=EEGDataset2.collate,
+                            num_workers=0,
+                            collate_fn=SyntheticDataset.collate,
                             pin_memory=False)
 
 val_loader = data.DataLoader(val_dataset,
-                            shuffle=True,
-                            batch_size=batch_size,
-                            num_workers=num_workers,
-                            collate_fn=EEGDataset2.collate,
-                            pin_memory=False)
+                             shuffle=True,
+                             batch_size=batch_size,
+                             num_workers=0,
+                             collate_fn=SyntheticDataset.collate,
+                             pin_memory=False)
 
-print(f"{time_str()} Initialized data loaders with {num_workers} workers and "
-      f"batch size of {batch_size}.")
+print(f"{time_str()} Initialized data loaders with batch size {batch_size}.")
+
 
 """ Initialize Models """
 
@@ -154,7 +157,7 @@ decoder = MLPDecoder(n_in=num_timesteps,
                      msg_hid=decoder_hidden1,
                      msg_out=decoder_out,
                      n_hid=decoder_hidden2,
-                     n_classes=n_classes,
+                     n_classes=num_clusters,
                      dropout_prob=dropout)
 decoder.to(device)
 
@@ -197,7 +200,7 @@ def train(epoch, keep_data=False):
         output = decoder(X, edges)
         # Our reconstruction loss is a bit weird, not sure what a
         # statistician would say!
-        loss_rec = F.cross_entropy(output, Y, size_average=True)
+        loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
 
         loss = loss_kl + loss_rec
         loss.backward()
@@ -247,7 +250,7 @@ def validate(epoch, keep_data=False):
         loss_kl = kl_categorical(prob, log_prior, num_atoms)
         # Our reconstruction loss is a bit weird, not sure what a
         # statistician would say!
-        loss_rec = F.cross_entropy(output, Y, size_average=True)
+        loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
 
         losses_kl.append(loss_kl.data.cpu().numpy())
         losses_rec.append(loss_rec.data.cpu().numpy())
