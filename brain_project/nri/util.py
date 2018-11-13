@@ -48,9 +48,9 @@ def mkdir_p(path):
             raise
 
 
-def kl_categorical(preds, log_prior, num_atoms, eps=1e-16):
+def kl_categorical(preds, log_prior, eps=1e-16):
     kl_div = preds * (torch.log(preds + eps) - log_prior)
-    return kl_div.sum() / (num_atoms * preds.size(0))
+    return kl_div.sum() / preds.size(0)
 
 
 def plot_confusion_matrix(ytrue, ypred, class_names, normalize=True):

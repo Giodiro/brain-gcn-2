@@ -175,42 +175,52 @@ print(f"{time_str()} Initialized model with {tot_params} parameters:")
 
 """ Train / Validation Functions """
 
-def train(epoch, keep_data=False):
+
+def run_epoch(epoch, data_loader, keep_data=False, validate=False):
     t = time.time()
 
     losses_kl = []; losses_rec = []
     if keep_data:
-        data_dict = {"edges": [], "target": [], "preds": []}
+        data_dict = {"edges": [], "target": [], "preds": [], "edge_probs": []}
 
-    encoder.train()
-    decoder.train()
-    scheduler.step()
-    for batch_idx, inputs in enumerate(tr_loader):
+    if validate:
+        encoder.eval()
+        decoder.eval()
+    else:
+        encoder.train()
+        decoder.train()
+        scheduler.step()
+
+    for batch_idx, inputs in enumerate(data_loader):
         X = inputs["X"].to(device)
         Y = inputs["Y"].to(device)
 
-        optimizer.zero_grad()
+        if not validate:
+            optimizer.zero_grad()
+
+        # Run the model & Calculate the loss
         logits = encoder(X, adj_tensor)  # B x E x Et
         edges = F.gumbel_softmax(logits.view(-1, logits.size(2)),
                                  tau=temp, hard=hard).view(logits.size())
-
         prob = F.softmax(logits, dim=-1)
-        loss_kl = kl_categorical(prob, log_prior, num_atoms)
+        loss_kl = kl_categorical(prob, log_prior)
 
         output = decoder(X, edges)
-        # Our reconstruction loss is a bit weird, not sure what a
-        # statistician would say!
         loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
 
-        loss = loss_kl + loss_rec
-        loss.backward()
-        optimizer.step()
+        if not validate:
+            # Call to the optimizer
+            loss = loss_kl + loss_rec
+            loss.backward()
+            optimizer.step()
 
+        # Lots of book-keeping from here
         losses_kl.append(loss_kl.data.cpu().numpy())
         losses_rec.append(loss_rec.data.cpu().numpy())
 
         if keep_data:
             data_dict["edges"].append(edges.data.cpu().numpy())
+            data_dict["edge_probs"].append(prob.data.cpu().numpy())
             data_dict["target"].append(inputs["Y"].data.cpu().numpy())
             data_dict["preds"].append(output.data.cpu().numpy())
 
@@ -219,6 +229,7 @@ def train(epoch, keep_data=False):
 
     if keep_data:
         data_dict["edges"] = np.concatenate(data_dict["edges"])
+        data_dict["edge_probs"] = np.concatenate(data_dict["edge_probs"])
         data_dict["target"] = np.concatenate(data_dict["target"])
         data_dict["preds"] = np.concatenate(data_dict["preds"])
         data_dict["KL_loss"] = loss_kl
@@ -227,51 +238,7 @@ def train(epoch, keep_data=False):
 
     return loss_kl, loss_rec, None
 
-def validate(epoch, keep_data=False):
-    t = time.time()
 
-    losses_kl = []; losses_rec = []
-    if keep_data:
-        data_dict = {"edges": [], "target": [], "preds": []}
-
-    encoder.eval()
-    decoder.eval()
-    for batch_idx, inputs in enumerate(val_loader):
-        X = inputs["X"].to(device)
-        Y = inputs["Y"].to(device)
-
-        logits = encoder(X, adj_tensor) # batch x n_edges x n_edge_types
-        edges = F.gumbel_softmax(logits.view(-1, logits.size(2)),
-                                 tau=temp, hard=hard).view(logits.size())
-        prob = F.softmax(logits, dim=-1)
-
-        output = decoder(X, edges)
-
-        loss_kl = kl_categorical(prob, log_prior, num_atoms)
-        # Our reconstruction loss is a bit weird, not sure what a
-        # statistician would say!
-        loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
-
-        losses_kl.append(loss_kl.data.cpu().numpy())
-        losses_rec.append(loss_rec.data.cpu().numpy())
-
-        if keep_data:
-            data_dict["edges"].append(edges.data.cpu().numpy())
-            data_dict["target"].append(inputs["Y"].data.cpu().numpy())
-            data_dict["preds"].append(output.data.cpu().numpy())
-
-    loss_kl = np.mean(losses_kl)
-    loss_rec = np.mean(losses_rec)
-
-    if keep_data:
-        data_dict["edges"] = np.concatenate(data_dict["edges"])
-        data_dict["target"] = np.concatenate(data_dict["target"])
-        data_dict["preds"] = np.concatenate(data_dict["preds"])
-        data_dict["KL_loss"] = loss_kl
-        data_dict["rec_loss"] = loss_rec
-        return loss_kl, loss_rec, data_dict
-
-    return loss_kl, loss_rec, None
 
 def training_summaries(data_dict, epoch, summary_writer, suffix="val"):
     import sklearn.metrics as metrics
@@ -279,14 +246,14 @@ def training_summaries(data_dict, epoch, summary_writer, suffix="val"):
     targets = data_dict["target"]
     preds = np.argmax(data_dict["preds"], axis=1)
 
-    # Accuracy
+    """ Accuracy """
     accuracy = metrics.accuracy_score(targets, preds, normalize=True)
     summary_writer.add_scalar(f"accuracy/{suffix}", accuracy, epoch)
 
-    # Edges (bar-chart)
+    """ Edges (bar-chart) """
     edges = data_dict["edges"]
     edges = edges.reshape(-1, edges.shape[-1])
-    edge_sums = np.sum(edges, axis=0) / edges.shape[0]
+    edge_sums = np.mean(edges, axis=0)
 
     fig, ax = plt.subplots()
     ax.bar(
@@ -299,11 +266,28 @@ def training_summaries(data_dict, epoch, summary_writer, suffix="val"):
 
     summary_writer.add_figure(f"edge_types/{suffix}", fig, epoch, close=True)
 
-    # Losses
+    """Another bar chart taking the mean of the edge probabilities
+    which are calculated with softmax instead of gumbel softmax.
+    """
+    eprob = data_dict["edge_probs"]
+    eprob = eprob.reshape(-1, eprob.shape[-1])
+    eprob = np.mean(eprob, axis=0)
+    fig, ax = plt.subplots()
+    ax.bar(
+        np.arange(len(edge_sums)),
+        edge_sums,
+        align="center",
+        alpha=0.7)
+    ax.set_xticks(np.arange(len(edge_sums)))
+    ax.set_xticklabels(["E%d" % i for i in range(len(edge_sums))])
+
+    summary_writer.add_figure(f"softmax_edge_types/{suffix}", fig, epoch, close=True)
+
+    """ Losses """
     summary_writer.add_scalar(f"KL_loss/{suffix}", data_dict["KL_loss"], epoch)
     summary_writer.add_scalar(f"cross_entropy_loss/{suffix}", data_dict["rec_loss"], epoch)
 
-    # Confusion matrix
+    """ Confusion matrix """
     fig = plot_confusion_matrix(targets, preds, dataset.CLASS_NAMES)
     summary_writer.add_figure(f"conf_mat/{suffix}", fig, epoch, close=True)
 
@@ -318,8 +302,14 @@ for epoch in range(n_epochs):
     et = time.time()
 
     keep_data = (epoch > 0) and (epoch % plot_interval == 0)
-    tr_loss_kl, tr_loss_rec, tr_data = train(epoch, keep_data=keep_data)
-    val_loss_kl, val_loss_rec, val_data = validate(epoch, keep_data=keep_data)
+    tr_loss_kl, tr_loss_rec, tr_data = run_epoch(epoch,
+                                                 tr_loader,
+                                                 keep_data=keep_data,
+                                                 validate=False)
+    val_loss_kl, val_loss_rec, val_data = validate(epoch,
+                                                   val_loader,
+                                                   keep_data=keep_data,
+                                                   validate=True)
 
     if keep_data:
         st = time.time()
