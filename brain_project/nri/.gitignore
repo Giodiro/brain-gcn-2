@@ -1,0 +1,8 @@
+# Log files from leonhard
+*.out
+*.err
+
+# Sublime text project
+*.sublime-project
+*.sublime-workspace
+
