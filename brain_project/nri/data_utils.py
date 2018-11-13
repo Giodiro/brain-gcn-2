@@ -29,8 +29,6 @@ def split_within_subj(subject_list, subj_data, seed=1922318, test_size=0.1):
     return keys_train, keys_test
 
 
-
-
 def prepare_timeseries_data(data_folder, subsample, sample_size, out_folder, save_batch_size):
     """Run preprocessing on dataset2 (timeseries data)
 

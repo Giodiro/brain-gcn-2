@@ -329,3 +329,78 @@ class EEGDataset2(Dataset):
 
         return data.astype(np.float32)
 
+
+
+class SyntheticDataset(Dataset):
+    """PyTorch data-loader for a synthetic temporal dataset.
+    This is designed to simulate dataset2, so will have the same kind of interface.
+    """
+
+    all_normalizations = ["standard",     # Standardize each ROI
+                          "none",         # Multiply all values by NORM_CONSTANT
+                          "val",          # Indicates that this is a validation loader so normalization is loaded from the tr loader
+                          ]
+
+    def __init__(self, samples, sample_labels, normalization="none"):
+        super(SyntheticDataset, self).__init__()
+        if normalization not in SyntheticDataset.all_normalizations:
+            raise ValueError(f"Normalization must be in {all_normalizations}.")
+
+        self.normalization = normalization
+        self.samples = samples
+        self.sample_labels = sample_labels
+
+        self.init_normalizer()
+
+    def __getitem__(self, idx):
+        X = self.normalize(self.samples[idx])
+        Y = self.sample_labels[idx]
+
+        sample = {
+            "X": torch.tensor(X, dtype=torch.float32),
+            "Y": torch.tensor(Y, dtype=torch.long),
+        }
+
+        return sample
+
+    def init_normalizer(self):
+        if self.normalization == "val":
+            return
+
+        print(f"{time_str()} Initializing normalization ({self.normalization}) statistics.")
+        if self.normalization == "none":
+            self.scaler = None
+            return
+
+        self.scaler = StandardScaler(copy=False, with_mean=True, with_std=True)
+        self.scaler.fit(np.concatenate(self.samples, 0))
+
+    def normalize(self, data):
+        """
+        Args:
+         - data : array [num_nodes, time_steps]
+
+        Returns:
+         - norm_data : array [num_nodes, time_steps]
+        """
+        if self.normalization == "val":
+            raise ValueError("Normalization cannot be `val`, must be set to a concrete value.")
+
+        if self.normalization != "none":
+            data = self.scaler.transform(data)
+
+        return data.astype(np.float32)
+
+    def __len__(self):
+        return len(self.samples)
+
+    @staticmethod
+    def collate(tensors):
+        batch = {}
+
+        keys = list(tensors[0].keys())
+        for k in keys:
+            collate_v = torch.stack([t[k] for t in tensors], 0)
+            batch[k] = collate_v
+
+        return batch
