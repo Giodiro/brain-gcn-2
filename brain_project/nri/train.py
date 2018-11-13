@@ -150,6 +150,7 @@ log_prior = log_prior.unsqueeze(0).unsqueeze(0)
 # Decoder
 decoder = MLPDecoder(n_in=num_timesteps,
                      n_edge_types=n_edge_types,
+                     n_atoms=num_atoms,
                      msg_hid=decoder_hidden1,
                      msg_out=decoder_out,
                      n_hid=decoder_hidden2,
