@@ -56,20 +56,20 @@ batch_size = 10
 # Learning rate
 lr = 0.001
 # rate of exponential decay for the learning rate (applied each epoch)
-lr_decay = 0.95
+lr_decay = 0.99
 # Maximum number of epochs to run for
 n_epochs = 1000
 plot_interval = 2
 
-encoder_hidden = [32, 64, 32]
-prior = np.array([0.94, 0.02, 0.02, 0.02])
+encoder_hidden = [128, 64, 28]
+prior = np.array([0.991, 0.003, 0.003, 0.003])
 n_edge_types = len(prior)
 dropout = 0.1
 factor = False
 enc_dist_type = "svm"
 
-decoder_hidden1 = 32
-decoder_hidden2 = 64
+decoder_hidden1 = 64
+decoder_hidden2 = 32
 decoder_out = 16
 
 n_classes = 6
