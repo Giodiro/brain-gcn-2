@@ -3,9 +3,11 @@ import matplotlib.pyplot as plt
 import networkx as nx
 
 
-def sample_precision(num_nodes, edge_prob, low_edge_prob=0.3, high_edge_prob=0.6):
+def sample_precision(num_nodes, edge_prob, seed=None, low_edge_prob=0.3, high_edge_prob=0.6):
     # Sample the graph, and get adjacency matrix
-    G = nx.erdos_renyi_graph(num_nodes, edge_prob)
+    G = nx.erdos_renyi_graph(num_nodes, edge_prob, random_seed=seed)
+    if seed is not None:
+        np.random.seed(seed)
     A = nx.to_numpy_array(G)
 
     # Modify the edges to have a value between `low_edge_prob` and `high_edge_prob`
@@ -45,8 +47,9 @@ def sample_timeseries(precision_mat, mean=None, time_steps=100):
 
 
 def gen_synthetic_tseries(num_clusters, num_tsteps, sample_size, num_nodes=5, edge_prob=0.2):
+    seed=123912
 
-    precisions = [sample_precision(num_nodes, edge_prob, low_edge_prob=0.3, high_edge_prob=0.6)
+    precisions = [sample_precision(num_nodes, edge_prob, low_edge_prob=0.3, high_edge_prob=0.6, seed=seed)
                     for i in range(num_clusters)]
 
     tseries = [sample_timeseries(precisions[i], time_steps=num_tsteps)
