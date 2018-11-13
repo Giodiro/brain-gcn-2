@@ -8,6 +8,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+"""Miscellaneous utility functions.
+"""
 
 def encode_onehot(labels):
     classes = set(labels)

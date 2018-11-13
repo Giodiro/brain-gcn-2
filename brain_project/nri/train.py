@@ -300,7 +300,7 @@ def training_summaries(data_dict, epoch, summary_writer, suffix="val"):
     summary_writer.add_scalar(f"cross_entropy_loss/{suffix}", data_dict["rec_loss"], epoch)
 
     # Confusion matrix
-    fig = plot_confusion_matrix(targets, preds, dataset.class_names)
+    fig = plot_confusion_matrix(targets, preds, dataset.CLASS_NAMES)
     summary_writer.add_figure(f"conf_mat/{suffix}", fig, epoch, close=True)
 
 
