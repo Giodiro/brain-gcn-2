@@ -10,11 +10,7 @@ from sklearn.model_selection import train_test_split
 
 from util import mkdir_p, time_str
 
-
-all_phases = {"REM_phasic": 1, "REM_tonic": 2,
-              "S2_Kcomplex": 3, "S2_plain": 4,
-              "S2_spindle": 5, "SWS_deep": 6
-             }
+from dataset import ALL_PHASES
 
 
 def split_within_subj(subject_list, subj_data, seed=1922318, test_size=0.1):
@@ -102,7 +98,7 @@ def prepare_timeseries_data(data_folder, subsample, sample_size, out_folder, sav
         print(f"Loading subject {subj}...")
         for phase in os.listdir(path_subj):
             path_phase = os.path.join(path_subj, phase)
-            if phase not in all_phases:
+            if phase not in ALL_PHASES:
                 continue
             if not os.path.isdir(path_phase):
                 continue
@@ -111,26 +107,26 @@ def prepare_timeseries_data(data_folder, subsample, sample_size, out_folder, sav
                 #     continue
                 path_file = os.path.join(path_phase, file)
                 mat_data = sio.loadmat(path_file)["Value"]
-                np_data = np.asarray(mat_data).T # [tot_tpoints, num_nodes]
+                np_data = np.asarray(mat_data) # [num_nodes, tot_tpoints]
                 ## Subsample and split
                 if subsample != 1:
-                    np_data = np_data[::subsample,:]
-                if sample_size > np_data.shape[0]:
+                    np_data = np_data[:,::subsample]
+                if sample_size > np_data.shape[1]:
                     warnings.warn("Desired sample size larger than the actual number of samples.")
-                    sample_size = np_data.shape[0]
-                if sample_size < np_data.shape[0]:
+                    sample_size = np_data.shape[1]
+                if sample_size < np_data.shape[1]:
                     split_idxs = [sample_size * i for i in
-                        range(1, np_data.shape[0] // sample_size + 1)]
-                    np_data = [s for s in np.split(np_data, split_idxs, axis=0)
-                                if s.shape[0] == sample_size]
+                        range(1, np_data.shape[1] // sample_size + 1)]
+                    np_data = [s for s in np.split(np_data, split_idxs, axis=1)
+                                if s.shape[1] == sample_size]
                 else:
                     np_data = [np_data]
 
                 ## Save to file
                 X.extend(np_data)
-                Y.extend([all_phases[phase]] * len(np_data))
+                Y.extend([ALL_PHASES[phase]] * len(np_data))
                 for k in range(i, i + len(np_data)):
-                    subj_data[k] = {"subj": subj, "phase": all_phases[phase]}
+                    subj_data[k] = {"subj": subj, "phase": ALL_PHASES[phase]}
                 i += len(np_data)
 
                 while len(X) >= save_batch_size:

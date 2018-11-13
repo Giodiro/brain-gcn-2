@@ -1,6 +1,7 @@
 import os
 import json
 import numpy as np
+from collections import OrderedDict
 import torch
 from torch.utils.data import Dataset
 import torch.nn as nn
@@ -10,15 +11,21 @@ from cache import LRUCache
 from util import time_str
 
 
-all_subjects = ['S01', 'S03', 'S04',
+ALL_SUBJECTS = ['S01', 'S03', 'S04',
                 'S05', 'S06', 'S07',
-                'S08', 'S10', 'S11', 'S12']
+                'S08', 'S10', 'S11',
+                'S12']
 
-all_phases = {"REM_phasic": 1, "REM_tonic": 2,
-              "S2_Kcomplex": 3, "S2_plain": 4,
-              "S2_spindle": 5, "SWS_deep": 6
-             }
-class_names = ["REM_phasic", "REM_tonic", "S2_Kcomplex", "S2_plain", "S2_spindle", "SWS_deep"]
+ALL_PHASES = OrderedDict([
+                ("REM_phasic", 0),
+                ("REM_tonic", 1),
+                ("S2_Kcomplex", 2),
+                ("S2_plain", 3),
+                ("S2_spindle", 4),
+                ("SWS_deep", 5)
+                ])
+
+CLASS_NAMES = list(ALL_PHASES.keys())
 
 
 class EEG_Dataset1(Dataset):
@@ -27,7 +34,7 @@ class EEG_Dataset1(Dataset):
 
     all_transformations = ["one", "std"]
 
-    def __init__(self, data_folder, subject_list=all_subjects, transformation="std", super_node=False):
+    def __init__(self, data_folder, subject_list=ALL_SUBJECTS, transformation="std", super_node=False):
         if transformation not in all_transformations:
             raise ValueError(f"Transformation must be in {all_transformations}.")
         if len(subject_list) == 0:
@@ -103,7 +110,7 @@ class EEG_Dataset1(Dataset):
                 path_phase = os.path.join(path_subj, phase)
                 if not os.path.isdir(path_phase):
                     continue
-                if phase not in all_phases:
+                if phase not in ALL_PHASES:
                     continue
                 for file in os.listdir(path_phase):
                     if re.search(r'average', file) is not None:
@@ -117,7 +124,7 @@ class EEG_Dataset1(Dataset):
                     mat_data = sio.loadmat(path_file)['TF']
                     np_data = np.asarray(mat_data).reshape(4095, 50)
                     X.append(np_data)
-                    Y.append(all_phases[phase])
+                    Y.append(ALL_PHASES[phase])
                     i += 1
         t2 = time.time()
         X = np.asarray(X)
@@ -261,9 +268,9 @@ class EEGDataset2(Dataset):
     def __getitem__(self, idx):
         x_file, y_file, iif = self.get_xy_files(idx)
 
-        X = self.xfile_cache.load(x_file, iif).transpose() # [num_nodes, time_steps]
+        X = self.xfile_cache.load(x_file, iif) # [num_nodes, time_steps]
         X = self.normalize(X)
-        Y = self.yfile_cache.load(y_file, iif) - 1  # Necessary, targets must start from 0
+        Y = self.yfile_cache.load(y_file, iif)
 
         sample = {
             "X": torch.tensor(X, dtype=torch.float32),
@@ -301,7 +308,7 @@ class EEGDataset2(Dataset):
         #       the allowed ids.
         for i in range(len(self)):
             x_file, y_file, iif = self.get_xy_files(i)
-            X = self.xfile_cache.load(x_file, iif).transpose()
+            X = self.xfile_cache.load(x_file, iif)
             self.scaler.partial_fit(X)
 
     def normalize(self, data):
