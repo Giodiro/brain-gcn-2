@@ -44,7 +44,7 @@ normalization = "none"
 # The number of nodes in each graph.
 num_atoms = 5
 # The number of time-steps per sample (this depends on the preprocessing).
-num_timesteps = 16
+num_timesteps = 24
 
 # Temperature of the gumbel-softmax approximation
 temp = 0.5
@@ -54,16 +54,16 @@ hard = True
 # Batch size
 batch_size = 12
 # Learning rate
-lr = 0.0001
+lr = 0.0003
 # rate of exponential decay for the learning rate (applied each epoch)
-lr_decay = 0.95
+lr_decay = 0.99
 # Maximum number of epochs to run for
 n_epochs = 1000
 plot_interval = 2
 
 encoder_hidden = [16, 32, 16]
 # Here we choose the prior based on edge_prob
-prior = np.array([0.8, 0.1, 0.1])
+prior = np.array([0.95, 0.025, 0.025])
 n_edge_types = len(prior)
 dropout = 0.1
 factor = False
@@ -203,7 +203,7 @@ def run_epoch(epoch, data_loader, keep_data=False, validate=False):
         edges = F.gumbel_softmax(logits.view(-1, logits.size(2)),
                                  tau=temp, hard=hard).view(logits.size())
         prob = F.softmax(logits, dim=-1)
-        loss_kl = kl_categorical(prob, log_prior)
+        loss_kl = kl_categorical(prob, log_prior, num_atoms)
 
         output = decoder(X, edges)
         loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
@@ -306,7 +306,7 @@ for epoch in range(n_epochs):
                                                  tr_loader,
                                                  keep_data=keep_data,
                                                  validate=False)
-    val_loss_kl, val_loss_rec, val_data = validate(epoch,
+    val_loss_kl, val_loss_rec, val_data = run_epoch(epoch,
                                                    val_loader,
                                                    keep_data=keep_data,
                                                    validate=True)
