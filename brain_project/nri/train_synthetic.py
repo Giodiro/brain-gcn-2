@@ -35,7 +35,7 @@ else:
 # Number of class labels
 num_clusters = 3
 # Number of timesteps to be generated for each cluster
-total_timesteps = 10000
+total_timesteps = 20000
 
 # Where to store tensorboard logs
 log_path = "gen_data/logs/"
@@ -44,7 +44,7 @@ normalization = "none"
 # The number of nodes in each graph.
 num_atoms = 5
 # The number of time-steps per sample (this depends on the preprocessing).
-num_timesteps = 24
+num_timesteps = 25
 
 # Temperature of the gumbel-softmax approximation
 temp = 0.5
@@ -52,7 +52,7 @@ temp = 0.5
 hard = True
 
 # Batch size
-batch_size = 12
+batch_size = 24
 # Learning rate
 lr = 0.0003
 # rate of exponential decay for the learning rate (applied each epoch)
@@ -63,13 +63,13 @@ plot_interval = 2
 
 encoder_hidden = [16, 32, 16]
 # Here we choose the prior based on edge_prob
-prior = np.array([0.95, 0.025, 0.025])
+prior = np.array([0.8, 0.1, 0.1])
 n_edge_types = len(prior)
 dropout = 0.1
 factor = False
 enc_dist_type = "svm"
 
-decoder_hidden1 = 32
+decoder_hidden1 = 64
 decoder_hidden2 = 32
 decoder_out = 16
 
@@ -209,8 +209,9 @@ def run_epoch(epoch, data_loader, keep_data=False, validate=False):
         loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
 
         if not validate:
+            kl_proportion = torch.tensor(max(np.exp(-epoch/30), 0.5)).to(loss_kl.device)
             # Call to the optimizer
-            loss = loss_kl + loss_rec
+            loss = kl_proportion * loss_kl + (1 - kl_proportion) * loss_rec
             loss.backward()
             optimizer.step()
 

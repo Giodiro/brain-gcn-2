@@ -5,7 +5,7 @@ import networkx as nx
 
 def sample_precision(num_nodes, edge_prob, seed=None, low_edge_prob=0.3, high_edge_prob=0.6):
     # Sample the graph, and get adjacency matrix
-    G = nx.erdos_renyi_graph(num_nodes, edge_prob, random_seed=seed)
+    G = nx.erdos_renyi_graph(num_nodes, edge_prob, seed=seed)
     if seed is not None:
         np.random.seed(seed)
     A = nx.to_numpy_array(G)
@@ -49,7 +49,7 @@ def sample_timeseries(precision_mat, mean=None, time_steps=100):
 def gen_synthetic_tseries(num_clusters, num_tsteps, sample_size, num_nodes=5, edge_prob=0.2):
     seed=123912
 
-    precisions = [sample_precision(num_nodes, edge_prob, low_edge_prob=0.3, high_edge_prob=0.6, seed=seed)
+    precisions = [sample_precision(num_nodes, edge_prob, low_edge_prob=0.3, high_edge_prob=0.6, seed=seed+i)
                     for i in range(num_clusters)]
 
     tseries = [sample_timeseries(precisions[i], time_steps=num_tsteps)
