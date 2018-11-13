@@ -14,6 +14,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sklearn import model_selection
+import networkx as nx
 
 from tensorboardX import SummaryWriter
 import dataset
@@ -282,6 +283,29 @@ def training_summaries(data_dict, epoch, summary_writer, suffix="val"):
     ax.set_xticklabels(["E%d" % i for i in range(len(edge_sums))])
 
     summary_writer.add_figure(f"softmax_edge_types/{suffix}", fig, epoch, close=True)
+
+
+    """ Prototypical Graphs """
+    edges = data_dict["edges"]
+    for target in np.unique(targets):
+        tedges = edges[targets == target] # B x num_edges x num_edge_types
+        tedges = np.sum(tedges, 0) # num_edges x num_edge_types
+        etype = 1
+        tedges = tedges[:,etype]
+        # Create graph from edges
+        G = nx.Graph()
+        G.add_nodes_from(np.arange(num_atoms))
+        k = 0
+        for i in range(num_atoms):
+            for j in range(i+1, num_atoms):
+                nx.add_edge(i, j, weight=tedges[k])
+                k += 1
+        fig, ax = plt.subplots()
+        nx.draw_networkx(G, ax=ax, with_labels=True)
+        nx.draw_networkx_edge_labels(G, ax=ax, edge_labels=nx.get_edge_attributes(G, 'weight'))
+
+        summary_writer.add_figure(f"edge{etype}_target{target}/{suffix}", fig, epoch, close=True)
+
 
     """ Losses """
     summary_writer.add_scalar(f"KL_loss/{suffix}", data_dict["KL_loss"], epoch)
