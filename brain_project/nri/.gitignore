@@ -6,3 +6,6 @@
 *.sublime-project
 *.sublime-workspace
 
+# Leonhard-specific scripts
+leonhard*
+
