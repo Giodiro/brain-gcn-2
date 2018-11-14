@@ -207,7 +207,7 @@ def run_epoch(epoch, data_loader, keep_data=False, validate=False):
         loss_kl = kl_categorical(prob, log_prior, num_atoms)
 
         output = decoder(X, edges)
-        loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
+        loss_rec = F.cross_entropy(output, Y, size_average=True)#reduction="elementwise_mean")
 
         if not validate:
             #kl_proportion = torch.tensor(max(np.exp(-epoch/30), 0.5)).to(loss_kl.device)
