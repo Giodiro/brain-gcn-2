@@ -30,11 +30,8 @@ if torch.cuda.is_available():
 else:
     device = "cpu"
 
-# Unused
-orig_data_folder = "/nfs/nas12.ethz.ch/fs1201/infk_jbuhmann_project_leonhard/cardioml/"
 # Where to fetch the data from
-#data_folder = "/local/home/gmeanti/cardioml/dataset2/subsample10_size250_batch64"
-data_folder = "/cluster/home/gmeanti/cardioml/dataset2/subsample10_size250_batch64"
+data_folder = "/nfs/nas12.ethz.ch/fs1201/infk_jbuhmann_project_leonhard/cardioml/projects/MEG_sleep_emily/dataset2_processed/subsample10_size250_batch64/"
 # Where to store tensorboard logs
 log_path = "gen_data/logs/"
 # Subject list is used to restrict loaded data to just the listed subjects.
