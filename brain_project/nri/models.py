@@ -219,12 +219,12 @@ class MLPEncoder(nn.Module):
 
         self.mlp1 = MLP(n_in, n_hid, n_hid, do_prob)
         self.mlp2 = MLP(n_hid * 2, n_hid, n_hid, do_prob)
-        # self.mlp3 = MLP(n_hid, n_hid, n_hid, do_prob)
+        self.mlp3 = MLP(n_hid, n_hid, n_hid, do_prob)
         if self.factor:
             self.mlp4 = MLP(n_hid * 3, n_hid, n_hid, do_prob)
             print("Using factor graph MLP encoder.")
         else:
-            #self.mlp4 = MLP(n_hid * 2, n_hid, n_hid, do_prob)
+            self.mlp4 = MLP(n_hid * 2, n_hid, n_hid, do_prob)
             print("Using MLP encoder.")
         self.fc_out = nn.Linear(n_hid, n_out)
 
@@ -299,16 +299,14 @@ class MLPEncoder(nn.Module):
 
         if self.factor:
             x = self.edge2node(x, adj) # [num_sims, num_nodes, n_hid]
-            #x = self.mlp3(x) # [num_sims, num_nodes, n_hid]
+            x = self.mlp3(x) # [num_sims, num_nodes, n_hid]
             x = self.node2edge(x, adj) # [num_sims, num_edges, n_hid*2]
-            x = self.mlp2(x) # [num_sims, num_edges, n_hid]
-            #x = torch.cat((x, x_skip), dim=2)  # Skip connection
-            #x = self.mlp4(x) # [num_sims, num_edges, n_hid]
+            x = torch.cat((x, x_skip), dim=2)  # Skip connection
+            x = self.mlp4(x) # [num_sims, num_edges, n_hid]
         else:
-            #x = self.mlp3(x)
-            #x = torch.cat((x, x_skip), dim=2)  # Skip connection
-            #x = self.mlp4(x)
-            pass
+            x = self.mlp3(x)
+            x = torch.cat((x, x_skip), dim=2)  # Skip connection
+            x = self.mlp4(x)
 
         return self.fc_out(x) # [num_sims, num_edges, n_out]
 

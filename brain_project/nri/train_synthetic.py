@@ -36,7 +36,7 @@ else:
 # Number of class labels
 num_clusters = 3
 # Number of timesteps to be generated for each cluster
-total_timesteps = 20000
+total_timesteps = 40000
 
 # Where to store tensorboard logs
 log_path = "gen_data/logs/"
@@ -44,8 +44,8 @@ log_path = "gen_data/logs/"
 normalization = "none"
 # The number of nodes in each graph.
 num_atoms = 5
-# The number of time-steps per sample (this depends on the preprocessing).
-num_timesteps = 25
+# The number of time-steps per sample.
+num_timesteps = 100
 
 # Temperature of the gumbel-softmax approximation
 temp = 0.5
@@ -53,25 +53,25 @@ temp = 0.5
 hard = True
 
 # Batch size
-batch_size = 24
+batch_size = 32
 # Learning rate
 lr = 0.0003
 # rate of exponential decay for the learning rate (applied each epoch)
 lr_decay = 0.99
 # Maximum number of epochs to run for
 n_epochs = 1000
-plot_interval = 2
+plot_interval = 5
 
-encoder_hidden = [16, 32, 16]
+encoder_hidden = [16, 32, 32]
 # Here we choose the prior based on edge_prob
-prior = np.array([0.8, 0.1, 0.1])
+prior = np.array([0.8, 0.2])
 n_edge_types = len(prior)
 dropout = 0.1
 factor = False
 enc_dist_type = "svm"
 
-decoder_hidden1 = 64
-decoder_hidden2 = 32
+decoder_hidden1 = 128
+decoder_hidden2 = 64
 decoder_out = 16
 
 
@@ -135,7 +135,7 @@ adj_tensor = to_sparse(torch.tensor(triu_mat.astype(np.float32)).to(device))
 
 # Encoder
 #encoder = MLPEncoder(n_in=num_timesteps,
-#                     n_hid=encoder_hidden,
+#                     n_hid=64,
 #                     n_out=n_edge_types,
 #                     do_prob=dropout,
 #                     factor=factor)
@@ -210,9 +210,10 @@ def run_epoch(epoch, data_loader, keep_data=False, validate=False):
         loss_rec = F.cross_entropy(output, Y, reduction="elementwise_mean")
 
         if not validate:
-            kl_proportion = torch.tensor(max(np.exp(-epoch/30), 0.5)).to(loss_kl.device)
+            #kl_proportion = torch.tensor(max(np.exp(-epoch/30), 0.5)).to(loss_kl.device)
             # Call to the optimizer
-            loss = kl_proportion * loss_kl + (1 - kl_proportion) * loss_rec
+            #loss = kl_proportion * loss_kl + (1 - kl_proportion) * loss_rec
+            loss = loss_kl + loss_rec
             loss.backward()
             optimizer.step()
 
@@ -290,7 +291,7 @@ def training_summaries(data_dict, epoch, summary_writer, suffix="val"):
     edges = data_dict["edges"]
     for target in np.unique(targets):
         tedges = edges[targets == target] # B x num_edges x num_edge_types
-        tedges = np.sum(tedges, 0) # num_edges x num_edge_types
+        tedges = np.mean(tedges, 0) # num_edges x num_edge_types
         etype = 1
         tedges = tedges[:,etype]
         # Create graph from edges
@@ -299,11 +300,13 @@ def training_summaries(data_dict, epoch, summary_writer, suffix="val"):
         k = 0
         for i in range(num_atoms):
             for j in range(i+1, num_atoms):
-                nx.add_edge(i, j, weight=tedges[k])
+                G.add_edge(i, j, weight=tedges[k])
                 k += 1
         fig, ax = plt.subplots()
-        nx.draw_networkx(G, ax=ax, with_labels=True)
-        nx.draw_networkx_edge_labels(G, ax=ax, edge_labels=nx.get_edge_attributes(G, 'weight'))
+
+        pos = nx.circular_layout(G)
+        nx.draw_networkx(G, pos=pos, ax=ax, with_labels=True)
+        nx.draw_networkx_edge_labels(G, pos=pos, ax=ax, edge_labels=nx.get_edge_attributes(G, 'weight'))
 
         summary_writer.add_figure(f"edge{etype}_target{target}/{suffix}", fig, epoch, close=True)
 
