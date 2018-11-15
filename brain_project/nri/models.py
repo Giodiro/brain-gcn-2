@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+
 class FastEncoder(nn.Module):
     """Alternative to the MLP encoder. Never does feature transformations
     on the edges, so should be a bit faster.
@@ -374,7 +375,7 @@ class MLPDecoder(nn.Module):
         Args:
          inputs : tensor [batch_size, num_atoms, num_timesteps, num_dims]
             The original inputs
-         sparse_edges : List[sparse tensor [N x N]]
+         sparse_edges : tensor [batch_size, num_edges, num_edge_types]
             The inferred edge types
          rel_rec : tensor [num_edges, num_atoms]
             Binary matrix telling where incoming edges are.
@@ -402,13 +403,15 @@ class MLPDecoder(nn.Module):
             # Inceasingly strong contributions
             out_adj_mats = out_adj_mats + edges * (i * 0.2)
 
-        # For final classif we can either use a convolution, which aggregatest through all nodes or an attention layer.
-        # Both should work fine! Attention layer easier to implement.
-
         # agg [B*N, msg_out]
         # Prediction MLP
         pred = F.dropout(F.relu(self.out_fc1(out_adj_mats)), p=self.dropout_prob) # B x N x F
         pred = F.dropout(F.relu(self.out_fc2(pred)), p=self.dropout_prob) # B x N x F'
+
+        # For final classif we can either use a convolution, which aggregates
+        # through all nodes or an attention layer.
+        # Both should work fine! Attention layer easier to implement. For now just
+        # mean pooling is okay.
 
         # Node aggregation
         pred = torch.mean(pred, dim=1) # B x F'
@@ -416,3 +419,113 @@ class MLPDecoder(nn.Module):
 
         return pred_logit
 
+
+class NRIDecoder(nn.Module):
+    """Recurrent decoder module."""
+
+    def __init__(self, n_in_node, rnn_hid, gnn_hid_list, pred_steps, do_prob=0.):
+        super(RNNDecoder, self).__init__()
+
+        # GNN parameters
+        all_gnn_sizes = [n_in_node] + gnn_hid_list
+        gnn_weights = []
+        for i in range(len(all_gnn_sizes) - 1):
+            w = nn.Parameter(nn.init.xavier_normal_(
+                torch.empty(all_gnn_sizes[i], all_gnn_sizes[i+1],
+                            dtype=torch.float32)))
+            gnn_weights.append(w)
+        self.gnn_weights = nn.ModuleList(gnn_weights)
+
+        self.hidden_r = nn.Linear(rnn_hid, rnn_hid, bias=False)
+        self.hidden_i = nn.Linear(rnn_hid, rnn_hid, bias=False)
+        self.hidden_h = nn.Linear(rnn_hid, rnn_hid, bias=False)
+
+        self.input_r = nn.Linear(gnn_hid_list[-1], rnn_hid, bias=True)
+        self.input_i = nn.Linear(gnn_hid_list[-1], rnn_hid, bias=True)
+        self.input_n = nn.Linear(gnn_hid_list[-1], rnn_hid, bias=True)
+
+        self.out_fc1 = nn.Linear(rnn_hid, rnn_hid)
+        self.out_fc2 = nn.Linear(rnn_hid, rnn_hid)
+        self.out_fc3 = nn.Linear(rnn_hid, n_in_node)
+
+        self.dropout_prob = do_prob
+        self.rnn_hid = rnn_hid
+        self.pred_steps = pred_steps
+
+
+    def rnn_step(self, inputs, sparse_edges, hidden):
+        """
+        Args:
+         - inputs : tensor [batch_size, num_atoms, num_dims]
+         - sparse_edges : tensor [batch_size, num_edges, num_edge_types]
+         - hidden : tensor [batch_size, num_atoms, rnn_hid]
+        """
+        # Graphs for each edge type. This is just a conversion from upper triangular to
+        # a full graph (symmetric).
+        B, N, Di = inputs.size()
+
+        edge_list = []
+        for i in range(1, Et):
+            edges = torch.zeros(B, N, N, dtype=torch.float32, device=inputs.device)
+            edges[:,self.triu_indices[0], self.triu_indices[1]] = sparse_edges[:,:,i]
+            edges = edges + edges.transpose(1, 2)
+            edge_list.append(edges)
+
+        # GNN
+        for layer in range(len(self.gnn_weights)):
+            new_x = torch.zeros(B, N, self.gnn_weights[layer].size(1), dtype=x.dtype, device=x.device)
+            # Modify embedding
+            x = torch.mm(x, self.gnn_weights[layer])
+            # Aggregate embedding (batched)
+            for i in range(1, Et):
+                aggregated = torch.bmm(edge_list[i], inputs) # B x N x D
+                new_x += aggregated
+
+            x = F.dropout(F.relu(new_x), p=self.dropout_prob) # B x N x D
+
+        # GRU-style gated aggregation
+        r = F.sigmoid(self.input_r(inputs) + self.hidden_r(x))
+        i = F.sigmoid(self.input_i(inputs) + self.hidden_i(x))
+        n = F.tanh(self.input_n(inputs) + r * self.hidden_h(x))
+        hidden = (1 - i) * n + i * hidden # B x N x D
+
+        # Output MLP
+        pred = F.dropout(F.relu(self.out_fc1(hidden)), p=self.dropout_prob)
+        pred = F.dropout(F.relu(self.out_fc2(pred)), p=self.dropout_prob)
+        pred = self.out_fc3(pred) # B x N x F
+
+        # Predict position/velocity difference
+        pred = inputs + pred
+
+        return pred, hidden
+
+    def forward(self, inputs, sparse_edges):
+        """
+        Args:
+         inputs : tensor [batch_size, num_atoms, num_timesteps, num_dims]
+            The original inputs
+         sparse_edges : List[sparse tensor [N x N]]
+            The inferred edge types
+        """
+
+        B, N, T, D = inputs.size()
+        assert self.pred_steps <= T
+
+        # Initialize RNN hidden state
+        rnn_hidden = torch.zeros(B, N, self.rnn_hid, dtype=torch.float32, requires_grad=True).to(inputs.device)
+
+        all_predictions = []
+
+        for step in range(0, T - 1):
+            if step % self.pred_steps == 0:
+                # Predict based on ground truth
+                rnn_input = inputs[:, :, step, :]
+            else:
+                rnn_input = pred_all[step - 1]
+
+            pred, rnn_hidden = self.rnn_step(inputs, sparse_edges, rnn_hidden)
+            # pred: B x N x D
+            all_predictions.append(pred)
+
+        # Stack all time-steps
+        return torch.stack(all_predictions, dim=2)
