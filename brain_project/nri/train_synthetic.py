@@ -19,7 +19,6 @@ import networkx as nx
 from tensorboardX import SummaryWriter
 import dataset
 from dataset import EEGDataset2, SyntheticDataset
-from data_utils import split_within_subj
 from synthetic_data import gen_synthetic_tseries
 from util import (time_str, mkdir_p, kl_categorical, safe_time_str, encode_onehot, plot_confusion_matrix, list_to_safe_str)
 from sparse_util import to_sparse, block_diag_from_ivs_torch
@@ -127,13 +126,13 @@ print(f"{time_str()} Initialized data loaders with batch size {batch_size}.")
 
 """ Initialize Models """
 
-# Generate off-diagonal interaction graph i.e. a fully connected graph
-# without self-loops.
-# Alternative: Just the upper triangular part of the graph (without the diagonal)
+# Generate the fully-connected graph which is initially used for interactions.
+# We use the upper triangular part only since we're interested in undirected
+# graphs.
 triu_mat = np.triu(np.ones([num_atoms, num_atoms]), k=1)
 adj_tensor = to_sparse(torch.tensor(triu_mat.astype(np.float32)).to(device))
 
-# Encoder
+## Encoder
 #encoder = MLPEncoder(n_in=num_timesteps,
 #                     n_hid=64,
 #                     n_out=n_edge_types,
@@ -146,12 +145,12 @@ encoder = FastEncoder(n_in=num_timesteps,
                       dist_type=enc_dist_type)
 encoder.to(device)
 
-# Prior
+## Prior
 assert sum(prior) == 1.0, "Edge prior doesn't sum to 1"
 log_prior = torch.tensor(np.log(prior)).float().to(device)
 log_prior = log_prior.unsqueeze(0).unsqueeze(0)
 
-# Decoder
+## Decoder
 decoder = MLPDecoder(n_in=num_timesteps,
                      n_edge_types=n_edge_types,
                      n_atoms=num_atoms,
@@ -162,7 +161,7 @@ decoder = MLPDecoder(n_in=num_timesteps,
                      dropout_prob=dropout)
 decoder.to(device)
 
-# Training
+## Training Utilities
 parameters = (list(filter(lambda p: p.requires_grad, encoder.parameters())) +
               list(filter(lambda p: p.requires_grad, decoder.parameters())))
 optimizer = optim.Adam(parameters, lr=lr)
@@ -170,16 +169,24 @@ scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=lr_decay)
 
 tot_params = sum([np.prod(p.size()) for p in parameters])
 print(f"{time_str()} Initialized model with {tot_params} parameters:")
-#for p in parameters:
-#    print(f"\tparam {p.name}: {p.size()}  (tot {np.prod(p.size())})")
 
 
 """ Train / Validation Functions """
 
 
 def run_epoch(epoch, data_loader, keep_data=False, validate=False):
-    t = time.time()
-
+    """Run the model for an epoch.
+    Args:
+     - epoch : int
+        The current epoch
+     - data_loader
+        PyTorch data loader to iterate over the batches
+     - keep_data : bool (default False)
+        Whether to keep batch outputs. Only necessary if we later
+        want to calculate statistics and report them.
+     - validate : bool (default False)
+        Whether to train the model or not.
+    """
     losses_kl = []; losses_rec = []
     if keep_data:
         data_dict = {"edges": [], "target": [], "preds": [], "edge_probs": []}
@@ -244,6 +251,8 @@ def run_epoch(epoch, data_loader, keep_data=False, validate=False):
 
 
 def training_summaries(data_dict, epoch, summary_writer, suffix="val"):
+    """Write summary statistics to tensorboard.
+    """
     import sklearn.metrics as metrics
 
     targets = data_dict["target"]
@@ -329,6 +338,8 @@ print(f"{time_str()} Writing summaries to {summary_path} every {plot_interval} e
 for epoch in range(n_epochs):
     et = time.time()
 
+    # Keep data is used as a flag specifying whether to write data
+    # to tensorboard or not. It depends on the `plot_interval` parameter.
     keep_data = (epoch > 0) and (epoch % plot_interval == 0)
     tr_loss_kl, tr_loss_rec, tr_data = run_epoch(epoch,
                                                  tr_loader,
@@ -338,7 +349,7 @@ for epoch in range(n_epochs):
                                                    val_loader,
                                                    keep_data=keep_data,
                                                    validate=True)
-
+    epoch_elapsed = time.time() - et
     if keep_data:
         st = time.time()
         training_summaries(tr_data,
@@ -353,7 +364,7 @@ for epoch in range(n_epochs):
 
     curr_lr = scheduler.get_lr()[0]
 
-    print(f"{time_str()} Epoch {epoch:4d} done in {time.time() - et:.2f}s - "
+    print(f"{time_str()} Epoch {epoch:4d} done in {epoch_elapsed:.2f}s - "
           f"lrate {curr_lr:.5f} - "
           f"KL tr {tr_loss_kl:.4f}, val {val_loss_kl:.4f} - "
           f"rec tr {tr_loss_rec:.4f}, val {val_loss_rec:.4f}.")
