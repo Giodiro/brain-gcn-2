@@ -421,7 +421,7 @@ class MLPDecoder(nn.Module):
 
 
 class MLPReconstructionDecoder(nn.Module):
-    def __init__(self, n_atoms, n_in_node, gnn_hid_list):
+    def __init__(self, n_atoms, n_in_node, gnn_hid_list, pred_steps):
         super(MLPReconstructionDecoder, self).__init__()
 
         # GNN parameters
@@ -432,16 +432,20 @@ class MLPReconstructionDecoder(nn.Module):
                 torch.empty(all_gnn_sizes[i], all_gnn_sizes[i+1],
                             dtype=torch.float32)))
             gnn_weights.append(w)
-        self.gnn_weights = nn.ModuleList(gnn_weights)
+        self.gnn_weights = nn.ParameterList(gnn_weights)
 
         # Output MLP Parameters
         gnn_hid = all_gnn_sizes[-1]
-        self.out_fc1 = nn.Linear(gnn_hid, gnn_hid)
-        self.out_fc2 = nn.Linear(gnn_hid, rnn_hid)
+        self.out_fc1 = nn.Linear(gnn_hid+n_in_node, gnn_hid)
+        self.out_fc2 = nn.Linear(gnn_hid, gnn_hid)
         self.out_fc3 = nn.Linear(gnn_hid, n_in_node)
 
         # triu indices
         self.triu_indices = [torch.from_numpy(t).long() for t in np.triu_indices(n_atoms, k=1)]
+
+        # Other
+        self.pred_steps = pred_steps
+        self.dropout_prob = 0.1
 
     def to(self, device):
         super().to(device)
@@ -458,7 +462,7 @@ class MLPReconstructionDecoder(nn.Module):
         """
 
         B, N, BT, D = inputs.size()
-        inputs = inputs.transpose(1,2).view(B*BT,N,D).contiguous()
+        inputs = inputs.transpose(1,2).contiguous().view(B*BT,N,D)
         Et = sparse_edges.size(2)
 
         # Create edges
@@ -472,11 +476,11 @@ class MLPReconstructionDecoder(nn.Module):
         # GNN
         x = inputs
         for layer in range(len(self.gnn_weights)):
-            new_x = torch.zeros(B, N, self.gnn_weights[layer].size(1), dtype=x.dtype, device=x.device)
+            new_x = torch.zeros(B*BT, N, self.gnn_weights[layer].size(1), dtype=x.dtype, device=x.device)
             # Modify embedding
-            x = torch.mm(x, self.gnn_weights[layer])
+            x = torch.matmul(x, self.gnn_weights[layer].unsqueeze(0))
             # Aggregate embedding (batched)
-            for i in range(1, Et):
+            for i in range(len(edge_list)):
                 aggregated = torch.bmm(edge_list[i], x) # B x N x D
                 new_x += aggregated
 
@@ -521,11 +525,11 @@ class MLPReconstructionDecoder(nn.Module):
         initial_time = inputs[:,:,0::self.pred_steps,:]
         output = torch.zeros(B, N, BT*self.pred_steps, D, dtype=torch.float32).to(inputs.device)
 
-        for step in range(0, pred_steps):
+        for step in range(0, self.pred_steps):
             initial_time = self.mlp_step(initial_time, sparse_edges) # B x N x BT x D
             output[:,:,step::self.pred_steps,:] = initial_time
 
-        all_predictions = output[:, :, :(T - 1), :]
+        all_predictions = output[:, :, :, :]
 
         return all_predictions
 
@@ -651,15 +655,13 @@ class RNNReconstructionDecoder(nn.Module):
 
 class TimeseriesClassifier(nn.Module):
     def __init__(self, n_in_node, mlp_hid_list, n_classes, do_prob):
-        super(SimpleClassifier, self).__init__()
+        super(TimeseriesClassifier, self).__init__()
 
-        all_mlp_dims = mlp_hid_list + [n_classes]
+        all_mlp_dims = [n_in_node] + mlp_hid_list + [n_classes]
 
         mlps = []
-        in_dim = n_in_node
-        for h_dim in all_mlp_dims:
-            mlps.append(nn.Linear(in_dim, h_dim))
-            in_dim = h_dim
+        for i in range(len(all_mlp_dims) - 1):
+            mlps.append(nn.Linear(all_mlp_dims[i], all_mlp_dims[i+1]))
 
         self.mlps = nn.ModuleList(mlps)
         self.dropout_prob = do_prob
@@ -673,7 +675,7 @@ class TimeseriesClassifier(nn.Module):
          logits : tensor [batch_size, num_classes]
         """
 
-        B, N, T, D = X.size()
+        B, N, T, D = inputs.size()
 
         # Flatten last 2 dimensions
         X = inputs.view(B, N, -1)
@@ -683,7 +685,7 @@ class TimeseriesClassifier(nn.Module):
 
         # Node aggregation
         pred = torch.mean(X, dim=1) # B x F'
-        pred_logit = self.mlps[-1](X)
+        pred_logit = self.mlps[-1](pred)
 
         return pred_logit
 
@@ -780,17 +782,18 @@ class VAEWithClassesReconstruction(VAEWithClasses):
         num_atoms = X.size(1)
 
         self.edges, self.prob = self.run_encoder(X, A)
-        self.rec_output = self.run_decoder(X, edges)
-        self.cls_output = self.run_classifier(self.rec_output)
+        Xrec = X.unsqueeze(3)
+        self.rec_output = self.run_decoder(Xrec, self.edges)
+        self.output = self.run_classifier(self.rec_output)
 
         loss_kl = self.kl_categorical(self.prob, self.log_prior, num_atoms)
 
         if int(torch.__version__.split(".")[1]) == 4:
-            loss_rec = F.mse(self.rec_output, X, size_average=True)
-            loss_class = F.cross_entropy(self.cls_output, Y, size_average=True)
+            loss_rec = F.mse_loss(self.rec_output, Xrec, size_average=True)
+            loss_class = F.cross_entropy(self.output, Y, size_average=True)
         else:
-            loss_rec = F.mse(self.rec_output, X, reduction="elementwise_mean")
-            loss_class = F.cross_entropy(self.cls_output, Y, reduction="elementwise_mean")
+            loss_rec = F.mse_loss(self.rec_output, Xrec, reduction="elementwise_mean")
+            loss_class = F.cross_entropy(self.output, Y, reduction="elementwise_mean")
 
         return {"KL": loss_kl, "Reconstruction": loss_rec, "Classification": loss_class}
 

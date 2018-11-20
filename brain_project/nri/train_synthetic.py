@@ -22,12 +22,12 @@ from dataset import EEGDataset2, SyntheticDataset
 from synthetic_data import gen_synthetic_tseries
 from util import (time_str, mkdir_p, kl_categorical, safe_time_str, encode_onehot, plot_confusion_matrix, list_to_safe_str)
 from sparse_util import to_sparse, block_diag_from_ivs_torch
-from models import MLPEncoder, MLPDecoder, FastEncoder, VAEWithClasses, VAEWithClassesReconstruction
+from models import MLPEncoder, MLPDecoder, FastEncoder, VAEWithClasses, VAEWithClassesReconstruction, TimeseriesClassifier, MLPReconstructionDecoder
 
 
 """  Parameters  """
 
-if torch.cuda.is_available():
+if False and torch.cuda.is_available():
     device = "cuda"
 else:
     device = "cpu"
@@ -146,30 +146,43 @@ encoder = FastEncoder(n_in=num_timesteps,
 
 
 ## Decoder
-decoder = MLPDecoder(n_in=num_timesteps,
-                     n_edge_types=n_edge_types,
-                     n_atoms=num_atoms,
-                     msg_hid=decoder_hidden1,
-                     msg_out=decoder_out,
-                     n_hid=decoder_hidden2,
-                     n_classes=num_clusters,
-                     dropout_prob=dropout)
+#decoder = MLPDecoder(
+#    n_in=num_timesteps,
+#    n_edge_types=n_edge_types,
+#    n_atoms=num_atoms,
+#    msg_hid=decoder_hidden1,
+#    msg_out=decoder_out,
+#    n_hid=decoder_hidden2,
+#    n_classes=num_clusters,
+#    dropout_prob=dropout)
 
-model = VAEWithClasses(
+decoder = MLPReconstructionDecoder(
+    n_atoms=num_atoms,
+    n_in_node=1,
+    gnn_hid_list=[32, 32, 32],
+    pred_steps=5)
+
+classifier = TimeseriesClassifier(
+    n_in_node=num_timesteps,
+    mlp_hid_list=[64, 32, 32],
+    n_classes=num_clusters,
+    do_prob=dropout)
+
+#model = VAEWithClasses(
+#    encoder=encoder,
+#    decoder=decoder,
+#    temp=temp,
+#    hard=hard,
+#    prior=prior)
+
+
+model = VAEWithClassesReconstruction(
     encoder=encoder,
     decoder=decoder,
+    classifier=classifier,
     temp=temp,
     hard=hard,
     prior=prior)
-
-
-# model = VAEWithClassesReconstruction(
-#     encoder=encoder,
-#     decoder=decoder,
-#     classifier=classifier,
-#     temp=temp,
-#     hard=hard,
-#     prior=prior)
 
 model.to(device)
 
