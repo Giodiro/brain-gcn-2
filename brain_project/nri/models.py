@@ -701,10 +701,14 @@ class VAEWithClasses(nn.Module):
 
         # Handle the prior
         assert sum(prior) == 1.0, "Edge prior doesn't sum to 1"
-        self.log_prior = torch.tensor(np.log(prior)).float().to(device)
+        self.log_prior = torch.tensor(np.log(prior)).float()
         self.log_prior = self.log_prior.unsqueeze(0).unsqueeze(0)
 
-    def forward(X, A, Y):
+    def to(self, device):
+        super().to(device)
+        self.log_prior = self.log_prior.to(device)
+
+    def forward(self, X, A, Y):
         """
         Args:
          X : tensor [num_sims, num_atoms, num_timesteps, num_dims]
@@ -721,7 +725,7 @@ class VAEWithClasses(nn.Module):
         # We save many tensors in `self` since the caller should be able to access
         # them for control over reporting / analysis.
         self.edges, self.prob = self.run_encoder(X, A)
-        self.output = self.run_decoder(X, edges)
+        self.output = self.run_decoder(X, self.edges)
 
         loss_kl = self.kl_categorical(self.prob, self.log_prior, num_atoms)
 
@@ -762,7 +766,7 @@ class VAEWithClassesReconstruction(VAEWithClasses):
     def run_classifier(self, X):
         return self.classifier(X)
 
-    def forward(X, A, Y):
+    def forward(self, X, A, Y):
         """
         Args:
          X : tensor [num_sims, num_atoms, num_timesteps, num_dims]

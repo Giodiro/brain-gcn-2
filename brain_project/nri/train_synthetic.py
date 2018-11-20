@@ -199,6 +199,7 @@ def run_epoch(epoch, data_loader, keep_data=False, validate=False):
         Whether to train the model or not.
     """
     data_dict = {}
+    losses_bookkeeping = {}
     if keep_data:
         data_dict = {"edges": [], "target": [], "preds": [], "edge_probs": []}
 
@@ -234,7 +235,7 @@ def run_epoch(epoch, data_loader, keep_data=False, validate=False):
                 losses_bookkeeping[k] = [v.data.cpu().numpy()]
 
         if keep_data:
-            data_dict["edges"].append(emodel.dges.data.cpu().numpy())
+            data_dict["edges"].append(model.edges.data.cpu().numpy())
             data_dict["edge_probs"].append(model.prob.data.cpu().numpy())
             data_dict["target"].append(inputs["Y"].data.cpu().numpy())
             data_dict["preds"].append(model.output.data.cpu().numpy())
@@ -257,7 +258,7 @@ def print_losses(data_dict, suffix):
     out_str = ""
     for k, v in data_dict.items():
         if k.startswith("loss_"):
-            out_str += f"{k} {suffix} {v:.4f}"
+            out_str += f"{k} {suffix} {v:.4f} "
     return out_str
 
 
@@ -332,8 +333,9 @@ def training_summaries(data_dict, epoch, summary_writer, suffix="val"):
 
 
     """ Losses """
-    summary_writer.add_scalar(f"KL_loss/{suffix}", data_dict["KL_loss"], epoch)
-    summary_writer.add_scalar(f"cross_entropy_loss/{suffix}", data_dict["rec_loss"], epoch)
+    for k, v in data_dict.items():
+        if k.startswith("loss_"):
+            summary_writer.add_scalar(f"{k[5:]}/{suffix}", v, epoch)
 
     """ Confusion matrix """
     fig = plot_confusion_matrix(targets, preds, dataset.CLASS_NAMES)
@@ -376,8 +378,8 @@ for epoch in range(n_epochs):
     curr_lr = scheduler.get_lr()[0]
 
     print(f"{time_str()} Epoch {epoch:4d} done in {epoch_elapsed:.2f}s - "
-          f"lrate {curr_lr:.5f} - {print_losses(tr_data, "train")} - "
-          f"{print_losses(val_data, "val")}")
+          f"lrate {curr_lr:.5f} - {print_losses(tr_data, 'train')} - "
+          f"{print_losses(val_data, 'val')}")
 
 print(f"{time_str()} Finished training. Exiting.")
 
