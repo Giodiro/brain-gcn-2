@@ -420,11 +420,121 @@ class MLPDecoder(nn.Module):
         return pred_logit
 
 
-class NRIDecoder(nn.Module):
+class MLPReconstructionDecoder(nn.Module):
+    def __init__(self, n_atoms, n_in_node, gnn_hid_list):
+        super(MLPReconstructionDecoder, self).__init__()
+
+        # GNN parameters
+        all_gnn_sizes = [n_in_node] + gnn_hid_list
+        gnn_weights = []
+        for i in range(len(all_gnn_sizes) - 1):
+            w = nn.Parameter(nn.init.xavier_normal_(
+                torch.empty(all_gnn_sizes[i], all_gnn_sizes[i+1],
+                            dtype=torch.float32)))
+            gnn_weights.append(w)
+        self.gnn_weights = nn.ModuleList(gnn_weights)
+
+        # Output MLP Parameters
+        gnn_hid = all_gnn_sizes[-1]
+        self.out_fc1 = nn.Linear(gnn_hid, gnn_hid)
+        self.out_fc2 = nn.Linear(gnn_hid, rnn_hid)
+        self.out_fc3 = nn.Linear(gnn_hid, n_in_node)
+
+        # triu indices
+        self.triu_indices = [torch.from_numpy(t).long() for t in np.triu_indices(n_atoms, k=1)]
+
+    def to(self, device):
+        super().to(device)
+        self.triu_indices[0] = self.triu_indices[0].to(device)
+        self.triu_indices[1] = self.triu_indices[1].to(device)
+
+    def mlp_step(self, inputs, sparse_edges):
+        """
+        Aggregate the original inputs according to the graph.
+        Then concatenate with the original inputs, and make prediction about the output time-steps.
+
+        Args:
+         inputs : tensor [batch_size, num_atoms, tstamp_batch, num_dims]
+        """
+
+        B, N, BT, D = inputs.size()
+        inputs = inputs.transpose(1,2).view(B*BT,N,D).contiguous()
+        Et = sparse_edges.size(2)
+
+        # Create edges
+        edge_list = []
+        for i in range(1, Et):
+            edges = torch.zeros(B, N, N, dtype=torch.float32, device=inputs.device)
+            edges[:,self.triu_indices[0], self.triu_indices[1]] = sparse_edges[:,:,i]
+            edges = edges + edges.transpose(1, 2)
+            edge_list.append(edges.repeat(BT, 1, 1))
+
+        # GNN
+        x = inputs
+        for layer in range(len(self.gnn_weights)):
+            new_x = torch.zeros(B, N, self.gnn_weights[layer].size(1), dtype=x.dtype, device=x.device)
+            # Modify embedding
+            x = torch.mm(x, self.gnn_weights[layer])
+            # Aggregate embedding (batched)
+            for i in range(1, Et):
+                aggregated = torch.bmm(edge_list[i], x) # B x N x D
+                new_x += aggregated
+
+            x = F.dropout(F.relu(new_x), p=self.dropout_prob) # B x N x D
+
+        # Skip connection
+        aug_inputs = torch.cat([inputs, x], dim=-1)
+
+        # Output MLP
+        pred = F.dropout(F.relu(self.out_fc1(aug_inputs)), p=self.dropout_prob)
+        pred = F.dropout(F.relu(self.out_fc2(pred)), p=self.dropout_prob)
+        pred = self.out_fc3(pred)
+
+        # Residual + reshape for output
+        output = inputs + pred
+        output = output.view(B, BT, N, D).transpose(2, 1).contiguous()
+
+        return output
+
+    def forward(self, inputs, sparse_edges):
+        """Predict the next time-step of the input time-series using the inferred graph.
+
+        Time-step predictions occur from fixed-distance starting time points
+        one starting point every `self.pred_steps`. In parallel, from
+        each starting point we predict the next step. The original time-series
+        is only used for seeding the initial starting points. Then predictions
+        are fed back into the model.
+
+        Args:
+         inputs : tensor [batch_size, num_atoms, num_timesteps, num_dims]
+            The original inputs
+         sparse_edges : tensor [batch_size, num_edges, num_edge_types]
+            The inferred edge types
+        """
+        B, N, T, D = inputs.size()
+        assert self.pred_steps <= T
+
+        preds = []
+
+        # The predictions are done in batches of size T // pred_steps (BT)
+        BT = T // self.pred_steps
+        initial_time = inputs[:,:,0::self.pred_steps,:]
+        output = torch.zeros(B, N, BT*self.pred_steps, D, dtype=torch.float32).to(inputs.device)
+
+        for step in range(0, pred_steps):
+            initial_time = self.mlp_step(initial_time, sparse_edges) # B x N x BT x D
+            output[:,:,step::self.pred_steps,:] = initial_time
+
+        all_predictions = output[:, :, :(T - 1), :]
+
+        return all_predictions
+
+
+class RNNReconstructionDecoder(nn.Module):
     """Recurrent decoder module."""
 
-    def __init__(self, n_in_node, rnn_hid, gnn_hid_list, pred_steps, do_prob=0.):
-        super(RNNDecoder, self).__init__()
+    def __init__(self, n_atoms, n_in_node, rnn_hid, gnn_hid_list, pred_steps, do_prob=0.):
+        super(RNNReconstructionDecoder, self).__init__()
 
         # GNN parameters
         all_gnn_sizes = [n_in_node] + gnn_hid_list
@@ -452,6 +562,13 @@ class NRIDecoder(nn.Module):
         self.rnn_hid = rnn_hid
         self.pred_steps = pred_steps
 
+        # triu indices
+        self.triu_indices = [torch.from_numpy(t).long() for t in np.triu_indices(n_atoms, k=1)]
+
+    def to(self, device):
+        super().to(device)
+        self.triu_indices[0] = self.triu_indices[0].to(device)
+        self.triu_indices[1] = self.triu_indices[1].to(device)
 
     def rnn_step(self, inputs, sparse_edges, hidden):
         """
@@ -472,13 +589,14 @@ class NRIDecoder(nn.Module):
             edge_list.append(edges)
 
         # GNN
+        x = inputs
         for layer in range(len(self.gnn_weights)):
             new_x = torch.zeros(B, N, self.gnn_weights[layer].size(1), dtype=x.dtype, device=x.device)
             # Modify embedding
             x = torch.mm(x, self.gnn_weights[layer])
             # Aggregate embedding (batched)
             for i in range(1, Et):
-                aggregated = torch.bmm(edge_list[i], inputs) # B x N x D
+                aggregated = torch.bmm(edge_list[i], x) # B x N x D
                 new_x += aggregated
 
             x = F.dropout(F.relu(new_x), p=self.dropout_prob) # B x N x D
@@ -504,7 +622,7 @@ class NRIDecoder(nn.Module):
         Args:
          inputs : tensor [batch_size, num_atoms, num_timesteps, num_dims]
             The original inputs
-         sparse_edges : List[sparse tensor [N x N]]
+         sparse_edges : tensor [batch_size, num_edges, num_edge_types]
             The inferred edge types
         """
 
@@ -521,7 +639,7 @@ class NRIDecoder(nn.Module):
                 # Predict based on ground truth
                 rnn_input = inputs[:, :, step, :]
             else:
-                rnn_input = pred_all[step - 1]
+                rnn_input = all_predictions[step - 1]
 
             pred, rnn_hidden = self.rnn_step(inputs, sparse_edges, rnn_hidden)
             # pred: B x N x D
@@ -529,3 +647,146 @@ class NRIDecoder(nn.Module):
 
         # Stack all time-steps
         return torch.stack(all_predictions, dim=2)
+
+
+class TimeseriesClassifier(nn.Module):
+    def __init__(self, n_in_node, mlp_hid_list, n_classes, do_prob):
+        super(SimpleClassifier, self).__init__()
+
+        all_mlp_dims = mlp_hid_list + [n_classes]
+
+        mlps = []
+        in_dim = n_in_node
+        for h_dim in all_mlp_dims:
+            mlps.append(nn.Linear(in_dim, h_dim))
+            in_dim = h_dim
+
+        self.mlps = nn.ModuleList(mlps)
+        self.dropout_prob = do_prob
+
+
+    def forward(self, inputs):
+        """
+        Args:
+         inputs : tensor [batch_size, num_atoms, num_timesteps, num_dims]
+        Returns:
+         logits : tensor [batch_size, num_classes]
+        """
+
+        B, N, T, D = X.size()
+
+        # Flatten last 2 dimensions
+        X = inputs.view(B, N, -1)
+
+        for i in range(len(self.mlps) - 1):
+            X = F.dropout(F.relu(self.mlps[i](X)), p=self.dropout_prob)
+
+        # Node aggregation
+        pred = torch.mean(X, dim=1) # B x F'
+        pred_logit = self.mlps[-1](X)
+
+        return pred_logit
+
+
+
+class VAEWithClasses(nn.Module):
+    def __init__(self, encoder, decoder, temp, hard, prior):
+        super(VAEWithClasses, self).__init__()
+
+        self.encoder = encoder
+        self.decoder = decoder
+
+        self.temp = temp
+        self.hard = hard
+
+        # Handle the prior
+        assert sum(prior) == 1.0, "Edge prior doesn't sum to 1"
+        self.log_prior = torch.tensor(np.log(prior)).float().to(device)
+        self.log_prior = self.log_prior.unsqueeze(0).unsqueeze(0)
+
+    def forward(X, A, Y):
+        """
+        Args:
+         X : tensor [num_sims, num_atoms, num_timesteps, num_dims]
+            The input data
+         A : sparse tensor [num_atoms, num_atoms]
+            Binary adjacency matrix.
+         Y : tensor [num_sims, ]
+            The class labels for every sample.
+        Returns:
+         x : tensor [num_sims, n_edges, n_out]
+        """
+        num_atoms = X.size(1)
+
+        # We save many tensors in `self` since the caller should be able to access
+        # them for control over reporting / analysis.
+        self.edges, self.prob = self.run_encoder(X, A)
+        self.output = self.run_decoder(X, edges)
+
+        loss_kl = self.kl_categorical(self.prob, self.log_prior, num_atoms)
+
+        if int(torch.__version__.split(".")[1]) == 4:
+            loss_rec = F.cross_entropy(self.output, Y, size_average=True)
+        else:
+            loss_rec = F.cross_entropy(self.output, Y, reduction="elementwise_mean")
+
+        return {"KL": loss_kl, "Reconstruction": loss_rec}
+
+    def run_encoder(self, X, A):
+        logits = self.encoder(X, A) # B x E x Et
+        edges = F.gumbel_softmax(logits.view(-1, logits.size(2)),
+                                 tau=self.temp, hard=self.hard).view(logits.size())
+        prob = F.softmax(logits, dim=-1)
+
+        return edges, prob
+
+    def run_decoder(self, X, E):
+        return self.decoder(X, E)
+
+    def kl_categorical(self, preds, log_prior, num_atoms, eps=1e-16):
+        kl_div = preds * (torch.log(preds + eps) - log_prior)
+        return kl_div.sum() / preds.size(0) / num_atoms
+
+    def delete_saved(self):
+        """Delete the data from `self` so it doesn't pollute gpu memory
+        """
+        pass
+
+
+class VAEWithClassesReconstruction(VAEWithClasses):
+    def __init__(self, encoder, decoder, classifier, temp, hard, prior):
+        super(VAEWithClassesReconstruction, self).__init__(encoder, decoder, temp, hard, prior)
+
+        self.classifier = classifier
+
+    def run_classifier(self, X):
+        return self.classifier(X)
+
+    def forward(X, A, Y):
+        """
+        Args:
+         X : tensor [num_sims, num_atoms, num_timesteps, num_dims]
+            The input data
+         A : sparse tensor [num_atoms, num_atoms]
+            Binary adjacency matrix.
+         Y : tensor [num_sims, ]
+            The class labels for every sample.
+        Returns:
+        """
+        num_atoms = X.size(1)
+
+        self.edges, self.prob = self.run_encoder(X, A)
+        self.rec_output = self.run_decoder(X, edges)
+        self.cls_output = self.run_classifier(self.rec_output)
+
+        loss_kl = self.kl_categorical(self.prob, self.log_prior, num_atoms)
+
+        if int(torch.__version__.split(".")[1]) == 4:
+            loss_rec = F.mse(self.rec_output, X, size_average=True)
+            loss_class = F.cross_entropy(self.cls_output, Y, size_average=True)
+        else:
+            loss_rec = F.mse(self.rec_output, X, reduction="elementwise_mean")
+            loss_class = F.cross_entropy(self.cls_output, Y, reduction="elementwise_mean")
+
+        return {"KL": loss_kl, "Reconstruction": loss_rec, "Classification": loss_class}
+

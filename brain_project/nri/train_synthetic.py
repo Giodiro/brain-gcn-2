@@ -22,7 +22,7 @@ from dataset import EEGDataset2, SyntheticDataset
 from synthetic_data import gen_synthetic_tseries
 from util import (time_str, mkdir_p, kl_categorical, safe_time_str, encode_onehot, plot_confusion_matrix, list_to_safe_str)
 from sparse_util import to_sparse, block_diag_from_ivs_torch
-from models import MLPEncoder, MLPDecoder, FastEncoder
+from models import MLPEncoder, MLPDecoder, FastEncoder, VAEWithClasses, VAEWithClassesReconstruction
 
 
 """  Parameters  """
@@ -143,12 +143,7 @@ encoder = FastEncoder(n_in=num_timesteps,
                       n_out=n_edge_types,
                       do_prob=dropout,
                       dist_type=enc_dist_type)
-encoder.to(device)
 
-## Prior
-assert sum(prior) == 1.0, "Edge prior doesn't sum to 1"
-log_prior = torch.tensor(np.log(prior)).float().to(device)
-log_prior = log_prior.unsqueeze(0).unsqueeze(0)
 
 ## Decoder
 decoder = MLPDecoder(n_in=num_timesteps,
@@ -159,11 +154,27 @@ decoder = MLPDecoder(n_in=num_timesteps,
                      n_hid=decoder_hidden2,
                      n_classes=num_clusters,
                      dropout_prob=dropout)
-decoder.to(device)
+
+model = VAEWithClasses(
+    encoder=encoder,
+    decoder=decoder,
+    temp=temp,
+    hard=hard,
+    prior=prior)
+
+
+# model = VAEWithClassesReconstruction(
+#     encoder=encoder,
+#     decoder=decoder,
+#     classifier=classifier,
+#     temp=temp,
+#     hard=hard,
+#     prior=prior)
+
+model.to(device)
 
 ## Training Utilities
-parameters = (list(filter(lambda p: p.requires_grad, encoder.parameters())) +
-              list(filter(lambda p: p.requires_grad, decoder.parameters())))
+parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
 optimizer = optim.Adam(parameters, lr=lr)
 scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=lr_decay)
 
@@ -187,16 +198,14 @@ def run_epoch(epoch, data_loader, keep_data=False, validate=False):
      - validate : bool (default False)
         Whether to train the model or not.
     """
-    losses_kl = []; losses_rec = []
+    data_dict = {}
     if keep_data:
         data_dict = {"edges": [], "target": [], "preds": [], "edge_probs": []}
 
     if validate:
-        encoder.eval()
-        decoder.eval()
+        model.eval()
     else:
-        encoder.train()
-        decoder.train()
+        model.train()
         scheduler.step()
 
     for batch_idx, inputs in enumerate(data_loader):
@@ -207,47 +216,49 @@ def run_epoch(epoch, data_loader, keep_data=False, validate=False):
             optimizer.zero_grad()
 
         # Run the model & Calculate the loss
-        logits = encoder(X, adj_tensor)  # B x E x Et
-        edges = F.gumbel_softmax(logits.view(-1, logits.size(2)),
-                                 tau=temp, hard=hard).view(logits.size())
-        prob = F.softmax(logits, dim=-1)
-        loss_kl = kl_categorical(prob, log_prior, num_atoms)
-
-        output = decoder(X, edges)
-        loss_rec = F.cross_entropy(output, Y, size_average=True)#reduction="elementwise_mean")
+        losses_dict = model(X, adj_tensor, Y)
 
         if not validate:
             #kl_proportion = torch.tensor(max(np.exp(-epoch/30), 0.5)).to(loss_kl.device)
+            #loss = kl_proportion * losses_dict["KL"] + (1 - kl_proportion) * losses_dict["Reconstruction"]
             # Call to the optimizer
-            #loss = kl_proportion * loss_kl + (1 - kl_proportion) * loss_rec
-            loss = loss_kl + loss_rec
+            loss = sum(losses_dict.values())
             loss.backward()
             optimizer.step()
 
         # Lots of book-keeping from here
-        losses_kl.append(loss_kl.data.cpu().numpy())
-        losses_rec.append(loss_rec.data.cpu().numpy())
+        for k, v in losses_dict.items():
+            try:
+                losses_bookkeeping[k].append(v.data.cpu().numpy())
+            except KeyError:
+                losses_bookkeeping[k] = [v.data.cpu().numpy()]
 
         if keep_data:
-            data_dict["edges"].append(edges.data.cpu().numpy())
-            data_dict["edge_probs"].append(prob.data.cpu().numpy())
+            data_dict["edges"].append(emodel.dges.data.cpu().numpy())
+            data_dict["edge_probs"].append(model.prob.data.cpu().numpy())
             data_dict["target"].append(inputs["Y"].data.cpu().numpy())
-            data_dict["preds"].append(output.data.cpu().numpy())
+            data_dict["preds"].append(model.output.data.cpu().numpy())
 
-    loss_kl = np.mean(losses_kl)
-    loss_rec = np.mean(losses_rec)
+        model.delete_saved()
+
+    for k, v in losses_bookkeeping.items():
+        data_dict["loss_" + k] = np.mean(v)
 
     if keep_data:
         data_dict["edges"] = np.concatenate(data_dict["edges"])
         data_dict["edge_probs"] = np.concatenate(data_dict["edge_probs"])
         data_dict["target"] = np.concatenate(data_dict["target"])
         data_dict["preds"] = np.concatenate(data_dict["preds"])
-        data_dict["KL_loss"] = loss_kl
-        data_dict["rec_loss"] = loss_rec
-        return loss_kl, loss_rec, data_dict
 
-    return loss_kl, loss_rec, None
+    return data_dict
 
+
+def print_losses(data_dict, suffix):
+    out_str = ""
+    for k, v in data_dict.items():
+        if k.startswith("loss_"):
+            out_str += f"{k} {suffix} {v:.4f}"
+    return out_str
 
 
 def training_summaries(data_dict, epoch, summary_writer, suffix="val"):
@@ -341,14 +352,14 @@ for epoch in range(n_epochs):
     # Keep data is used as a flag specifying whether to write data
     # to tensorboard or not. It depends on the `plot_interval` parameter.
     keep_data = (epoch > 0) and (epoch % plot_interval == 0)
-    tr_loss_kl, tr_loss_rec, tr_data = run_epoch(epoch,
-                                                 tr_loader,
-                                                 keep_data=keep_data,
-                                                 validate=False)
-    val_loss_kl, val_loss_rec, val_data = run_epoch(epoch,
-                                                   val_loader,
-                                                   keep_data=keep_data,
-                                                   validate=True)
+    tr_data = run_epoch(epoch,
+                        tr_loader,
+                        keep_data=keep_data,
+                        validate=False)
+    val_data = run_epoch(epoch,
+                         val_loader,
+                         keep_data=keep_data,
+                         validate=True)
     epoch_elapsed = time.time() - et
     if keep_data:
         st = time.time()
@@ -365,9 +376,8 @@ for epoch in range(n_epochs):
     curr_lr = scheduler.get_lr()[0]
 
     print(f"{time_str()} Epoch {epoch:4d} done in {epoch_elapsed:.2f}s - "
-          f"lrate {curr_lr:.5f} - "
-          f"KL tr {tr_loss_kl:.4f}, val {val_loss_kl:.4f} - "
-          f"rec tr {tr_loss_rec:.4f}, val {val_loss_rec:.4f}.")
+          f"lrate {curr_lr:.5f} - {print_losses(tr_data, "train")} - "
+          f"{print_losses(val_data, "val")}")
 
 print(f"{time_str()} Finished training. Exiting.")
 
