@@ -35,21 +35,19 @@ def sample_precision(num_nodes, edge_prob, seed=None, low_edge_prob=0.3, high_ed
 
 def sample_timeseries(precision_mat, mean=None, time_steps=100):
     cov = np.linalg.inv(precision_mat)
-    print("Precision: \n", precision_mat)
-    print("Covariance: \n", cov)
 
     if mean is None:
         mean = np.zeros(cov.shape[0])
 
     tseries = np.random.multivariate_normal(mean, cov, size=time_steps, check_valid="warn")
 
-    return tseries # num_tsteps, num_nodes
+    return tseries
 
 
 def gen_synthetic_tseries(num_clusters, num_tsteps, sample_size, num_nodes=5, edge_prob=0.2):
-    seed=123912
+    seed = 123912
 
-    precisions = [sample_precision(num_nodes, edge_prob, low_edge_prob=0.3, high_edge_prob=0.6, seed=seed+i)
+    precisions = [sample_precision(num_nodes, edge_prob, low_edge_prob=0.5, high_edge_prob=0.9, seed=seed+i)
                     for i in range(num_clusters)]
 
     tseries = [sample_timeseries(precisions[i], time_steps=num_tsteps)
@@ -67,4 +65,4 @@ def gen_synthetic_tseries(num_clusters, num_tsteps, sample_size, num_nodes=5, ed
         all_samples.extend(samples)
         all_labels.extend([i] * len(samples))
 
-    return all_samples, all_labels
+    return all_samples, all_labels, precisions
