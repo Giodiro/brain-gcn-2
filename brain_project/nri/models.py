@@ -421,7 +421,18 @@ class MLPDecoder(nn.Module):
 
 
 class MLPReconstructionDecoder(nn.Module):
-    def __init__(self, n_atoms, n_in_node, gnn_hid_list, pred_steps):
+    def __init__(self, n_atoms, n_in_node, gnn_hid_list, mlp_hid, pred_steps, use_graph, dropout_prob):
+        """
+        Args:
+         n_in_node : int
+            This should most likely be 1
+         pred_steps : int
+            How many steps in a row to predict. Every `pred_steps` we start
+            with a true data point for prediction.
+         use_graph : bool
+            Whether to use the inferred graph in predicting the next time-series
+            steps.
+        """
         super(MLPReconstructionDecoder, self).__init__()
 
         # GNN parameters
@@ -435,17 +446,17 @@ class MLPReconstructionDecoder(nn.Module):
         self.gnn_weights = nn.ParameterList(gnn_weights)
 
         # Output MLP Parameters
-        gnn_hid = all_gnn_sizes[-1]
-        self.out_fc1 = nn.Linear(gnn_hid+n_in_node, gnn_hid)
-        self.out_fc2 = nn.Linear(gnn_hid, gnn_hid)
-        self.out_fc3 = nn.Linear(gnn_hid, n_in_node)
+        self.out_fc1 = nn.Linear(all_gnn_sizes[-1]+n_in_node, mlp_hid)
+        self.out_fc2 = nn.Linear(mlp_hid, mlp_hid)
+        self.out_fc3 = nn.Linear(mlp_hid, n_in_node)
 
         # triu indices
         self.triu_indices = [torch.from_numpy(t).long() for t in np.triu_indices(n_atoms, k=1)]
 
         # Other
         self.pred_steps = pred_steps
-        self.dropout_prob = 0.1
+        self.use_graph = use_graph
+        self.dropout_prob = dropout_prob
 
     def to(self, device):
         super().to(device)
@@ -458,38 +469,48 @@ class MLPReconstructionDecoder(nn.Module):
         Then concatenate with the original inputs, and make prediction about the output time-steps.
 
         Args:
-         inputs : tensor [batch_size, num_atoms, tstamp_batch, num_dims]
+         inputs : tensor [batch_size, num_atoms, tstamp_batch]
         """
+        if len(inputs.size() == 3):
+            inputs = inputs.unsqueeze(3)
 
         B, N, BT, D = inputs.size()
         inputs = inputs.transpose(1,2).contiguous().view(B*BT,N,D)
         Et = sparse_edges.size(2)
 
-        # Create edges
-        edge_list = []
-        for i in range(1, Et):
-            edges = torch.zeros(B, N, N, dtype=torch.float32, device=inputs.device)
-            edges[:,self.triu_indices[0], self.triu_indices[1]] = sparse_edges[:,:,i]
-            edges = edges + edges.transpose(1, 2)
-            edge_list.append(edges.repeat(BT, 1, 1))
+        # Create adjacency matrices as edges
+        if self.use_graph:
+            edge_list = []
+            # Here range starts from 1 to exclude first edge (no edge)
+            # from the aggregation code
+            for i in range(1, Et):
+                edges = torch.zeros(B, N, N, dtype=torch.float32, device=inputs.device)
+                edges[:,self.triu_indices[0], self.triu_indices[1]] = sparse_edges[:,:,i]
+                edges = edges + edges.transpose(1, 2)
+                edge_list.append(edges.repeat(BT, 1, 1))
 
         # GNN
         x = inputs
         for layer in range(len(self.gnn_weights)):
-            new_x = torch.zeros(B*BT, N, self.gnn_weights[layer].size(1), dtype=x.dtype, device=x.device)
-            # Modify embedding
+            # Modify embedding (x: [B*BT, N, D] -> [B*BT, N, D']
             x = torch.matmul(x, self.gnn_weights[layer].unsqueeze(0))
-            # Aggregate embedding (batched)
-            for i in range(len(edge_list)):
-                aggregated = torch.bmm(edge_list[i], x) # B x N x D
-                new_x += aggregated
+
+            if self.use_graph:
+                new_x = torch.zeros(B*BT, N, self.gnn_weights[layer].size(1), dtype=x.dtype, device=x.device)
+                # Aggregate embedding (batched)
+                for i in range(len(edge_list)):
+                    # x: [B*BT, N, D'] -> [B*BT, N, D']
+                    aggregated = torch.bmm(edge_list[i], x)
+                    new_x += aggregated
+            else:
+                new_x = x
 
             x = F.dropout(F.relu(new_x), p=self.dropout_prob) # B x N x D
 
-        # Skip connection
+        # Skip connection  [B*BT, N, D'] -> [B*BT, N, D'+D]
         aug_inputs = torch.cat([inputs, x], dim=-1)
 
-        # Output MLP
+        # Output MLP  [B*BT, N, D'+D] -> [B*BT, N, D]
         pred = F.dropout(F.relu(self.out_fc1(aug_inputs)), p=self.dropout_prob)
         pred = F.dropout(F.relu(self.out_fc2(pred)), p=self.dropout_prob)
         pred = self.out_fc3(pred)
@@ -497,7 +518,8 @@ class MLPReconstructionDecoder(nn.Module):
         # Residual + reshape for output
         output = inputs + pred
         output = output.view(B, BT, N, D).transpose(2, 1).contiguous()
-
+        if D == 1:
+            return output.squeeze(3)
         return output
 
     def forward(self, inputs, sparse_edges):
@@ -510,28 +532,27 @@ class MLPReconstructionDecoder(nn.Module):
         are fed back into the model.
 
         Args:
-         inputs : tensor [batch_size, num_atoms, num_timesteps, num_dims]
+         inputs : tensor [batch_size, num_atoms, num_timesteps]
             The original inputs
          sparse_edges : tensor [batch_size, num_edges, num_edge_types]
             The inferred edge types
         """
-        B, N, T, D = inputs.size()
+        B, N, T = inputs.size()
         assert self.pred_steps <= T
 
         preds = []
 
         # The predictions are done in batches of size T // pred_steps (BT)
+        # This fails if pred_steps doesn't fit in T exactly!
         BT = T // self.pred_steps
-        initial_time = inputs[:,:,0::self.pred_steps,:]
-        output = torch.zeros(B, N, BT*self.pred_steps, D, dtype=torch.float32).to(inputs.device)
+        initial_time = inputs[:,:,0::self.pred_steps]
+        output = torch.zeros(B, N, BT*self.pred_steps, dtype=torch.float32).to(inputs.device)
 
         for step in range(0, self.pred_steps):
             initial_time = self.mlp_step(initial_time, sparse_edges) # B x N x BT x D
-            output[:,:,step::self.pred_steps,:] = initial_time
+            output[:,:,step::self.pred_steps] = initial_time
 
-        all_predictions = output[:, :, :, :]
-
-        return all_predictions
+        return output
 
 
 class RNNReconstructionDecoder(nn.Module):
@@ -654,7 +675,9 @@ class RNNReconstructionDecoder(nn.Module):
 
 
 class TimeseriesClassifier(nn.Module):
-    def __init__(self, n_in_node, mlp_hid_list, n_classes, do_prob):
+    """A simple classifier based on fully connected layers.
+    """
+    def __init__(self, n_in_node, mlp_hid_list, n_classes, dropout_prob):
         super(TimeseriesClassifier, self).__init__()
 
         all_mlp_dims = [n_in_node] + mlp_hid_list + [n_classes]
@@ -664,13 +687,12 @@ class TimeseriesClassifier(nn.Module):
             mlps.append(nn.Linear(all_mlp_dims[i], all_mlp_dims[i+1]))
 
         self.mlps = nn.ModuleList(mlps)
-        self.dropout_prob = do_prob
-
+        self.dropout_prob = dropout_prob
 
     def forward(self, inputs):
         """
         Args:
-         inputs : tensor [batch_size, num_atoms, num_timesteps, num_dims]
+         inputs : tensor [batch_size, num_atoms, num_timesteps]
         Returns:
          logits : tensor [batch_size, num_classes]
         """
@@ -736,7 +758,7 @@ class VAEWithClasses(nn.Module):
         else:
             loss_rec = F.cross_entropy(self.output, Y, reduction="elementwise_mean")
 
-        return {"KL": loss_kl, "Reconstruction": loss_rec}
+        return {"KL": loss_kl, "Classification": loss_rec}
 
     def run_encoder(self, X, A):
         logits = self.encoder(X, A) # B x E x Et
@@ -782,7 +804,6 @@ class VAEWithClassesReconstruction(VAEWithClasses):
         num_atoms = X.size(1)
 
         self.edges, self.prob = self.run_encoder(X, A)
-        Xrec = X.unsqueeze(3)
         self.rec_output = self.run_decoder(Xrec, self.edges)
         self.output = self.run_classifier(self.rec_output)
 

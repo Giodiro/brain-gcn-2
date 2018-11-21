@@ -86,11 +86,12 @@ model_name = (f"NRIClassif{safe_time_str()}_"
 
 # Generate the data
 print(f"{time_str()} Generating synthetic data.")
-samples, labels = gen_synthetic_tseries(num_clusters=num_clusters,
-                                        num_tsteps=total_timesteps,
-                                        sample_size=num_timesteps,
-                                        num_nodes=num_atoms,
-                                        edge_prob=0.2)
+samples, labels, precisions = gen_synthetic_tseries(
+    num_clusters=num_clusters,
+    num_tsteps=total_timesteps,
+    sample_size=num_timesteps,
+    num_nodes=num_atoms,
+    edge_prob=0.2)
 
 # Split the data between train / test
 splitting = model_selection.train_test_split(
@@ -101,9 +102,8 @@ print(f"{time_str()} After splitting we have "
       f"{len(x_train)} samples for training and {len(x_test)} "
       f"for testing.")
 
-tr_dataset = SyntheticDataset(x_train, y_train, normalization)
+tr_dataset = SyntheticDataset(x_train, y_train, normalization=normalization)
 val_dataset = SyntheticDataset(x_test, y_test, normalization="val")
-# Normalization statistics should only be computed on the training set.
 val_dataset.normalization = tr_dataset.normalization
 val_dataset.scaler = tr_dataset.scaler
 
@@ -159,14 +159,17 @@ encoder = FastEncoder(n_in=num_timesteps,
 decoder = MLPReconstructionDecoder(
     n_atoms=num_atoms,
     n_in_node=1,
-    gnn_hid_list=[32, 32, 32],
-    pred_steps=5)
+    gnn_hid_list=[32, 64, 64],
+    mlp_hid=16
+    pred_steps=5,
+    use_graph=True,
+    dropout_prob=0.1)
 
 classifier = TimeseriesClassifier(
     n_in_node=num_timesteps,
     mlp_hid_list=[64, 32, 32],
     n_classes=num_clusters,
-    do_prob=dropout)
+    dropout_prob=0.1)
 
 #model = VAEWithClasses(
 #    encoder=encoder,
