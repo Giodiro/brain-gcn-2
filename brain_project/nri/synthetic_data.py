@@ -33,24 +33,44 @@ def sample_precision(num_nodes, edge_prob, seed=None, low_edge_prob=0.3, high_ed
     return newA
 
 
-def sample_timeseries(precision_mat, mean=None, time_steps=100):
+def sample_timeseries(precision_mat, mean=None, time_steps=100, lag_strength=0.0):
+    """
+    Args:
+     - lag_strength : float
+        We can use a 1-lag with strength `lag_strength`. If this is 0 then we have
+        0-lag.
+    """
     cov = np.linalg.inv(precision_mat)
 
     if mean is None:
         mean = np.zeros(cov.shape[0])
 
-    tseries = np.random.multivariate_normal(mean, cov, size=time_steps, check_valid="warn")
+    tseries = [np.random.multivariate_normal(mean, cov)]
+    for t in range(time_steps-1):
+        new_t = np.random.multivariate_normal(mean, cov)
+        tseries.append(lag_strength*tseries[-1] + new_t)
+
+    #tseries = np.random.multivariate_normal(mean, cov, size=time_steps, check_valid="warn")
 
     return tseries
 
 
-def gen_synthetic_tseries(num_clusters, num_tsteps, sample_size, num_nodes=5, edge_prob=0.2):
-    seed = 123912
+def gen_synthetic_tseries(num_clusters, num_tsteps, sample_size, num_nodes=5, edge_prob=0.2, seed=123912):
 
-    precisions = [sample_precision(num_nodes, edge_prob, low_edge_prob=0.5, high_edge_prob=0.9, seed=seed+i)
+    low_edge_prob = 0.5
+    high_edge_prob = 0.9
+    lag_strength = 0.5
+
+    precisions = [sample_precision(num_nodes,
+                                   edge_prob,
+                                   low_edge_prob=low_edge_prob,
+                                   high_edge_prob=high_edge_prob,
+                                   seed=seed+i)
                     for i in range(num_clusters)]
 
-    tseries = [sample_timeseries(precisions[i], time_steps=num_tsteps)
+    tseries = [sample_timeseries(precisions[i],
+                                 time_steps=num_tsteps,
+                                 lag_strength=lag_strength)
                     for i in range(num_clusters)]
 
     # split according to sample size
