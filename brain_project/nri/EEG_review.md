@@ -2,7 +2,7 @@ Definitions from [here][static connectivity review]
 FC: functional connectivity - the temporal correlation (in terms of statistically significant dependence between distant brain regions) among the activity of different neural assemblies.
 EC: effective connectivity - the direct or indirect influence that one neural system exerts over another. Describes dynamic directional interactions among brain regions.
 
-Two different lines of research: one concerns static analysis of connectivity, reviewed [here][static connectivity review]; another concerns dynamic functional connectivity (dFC) and is reviewed [here][dynamic connectivity review]
+Two different lines of research: one concerns static analysis of connectivity, reviewed [here][static connectivity review]; another concerns dynamic functional connectivity (dFC) and is reviewed [here (for fMRI data)][dynamic connectivity review]
 
 
 ### Static FC
@@ -68,9 +68,26 @@ While on the original paper they only had 2-dimensional time-series, here they u
 
 ## Dynamics of large-scale electrophysiological networks: A technical review [10.1016/j.neuroimage.2017.10.003][https://doi.org/10.1016/j.neuroimage.2017.10.003]
 Another review for dFC analysis, this time based on EEG signals instead of fMRI!
-Discussion about signal leakage in the first place.
 
-## Bayesian Structure Learning for Dynamic Brain Connectivity [http://proceedings.mlr.press/v84/andersen18a/andersen18a.pdf]
+#### Discussion about signal leakage
+Signal leakage occurs as a byproduct of source reconstruction, due to this problem consisting of reconstruction of many sources from relatively few sensor signals. The result is that **from two uncorrelated sources, their reconstructed time courses may become correlated**. All solutions for reducing this erroneous correlation are based on the fact that leakage occurs instantaneously, so any zero-lag relationships between sources must be discounted or removed.
+Leakage invariant connectivity metrics exist: ImCoh, Phase Locking Value.
+In other cases correction to the data can be done as a preprocessing step which orthogonalises the data.
+When using sliding-window analysis of dynamic connectivity, leakage correction should be done on each window.
+
+#### Sliding windows
+
+Once the connectivity patterns have been identified within individual time-windows, we are left with a large number of connectivity matrices to analyze. K-means clustering has been used and extended for better performance on this kind of datasets.
+ICA has been applied to identify networks based on common modulations in connectivity between regions. ICA can identify networks which overlap spatially, based on their temporal signatures.
+
+
+## [Fast transient networks in spontaneous human brain activity][https://cdn.elifesciences.org/articles/01867/elife-01867-v1.pdf]
+
+HMM with Gaussian Emission
+
+
+
+## [Bayesian Structure Learning for Dynamic Brain Connectivity][http://proceedings.mlr.press/v84/andersen18a/andersen18a.pdf]
 
 Model estimates covariances which vary smoothly over time, with an instantaneous decomposition into a collection of spatially sparse components.
 Evaluation: 1) synthetic data; 2) qualitative evaluation on brain data; 3) classification on brain data.
@@ -110,6 +127,7 @@ Novel method for identifying large-scale phase-coupled network dynamics.
 TDE-HMM Model (time-delay embedded HMM):
 Improves on the MVAR observation model, since it can scale more easily to whole brain (larger number of regions, in evaluation they use 42 ROIs) (MVAR has squared number of parameters in the ROI count).
 The HMM has a MV Gaussian observation model on a temporal embedding of the data: each data-point contains not just the instantaneous values, but also the values at lags 1 to L. So the Gaussian emission covariance at a given state models the same autocorrelation coefficients as the MVAR model. Observations describe neural activity over a time window. Since this would require estimation of a (#ROIs * # time-lags)^2 covariance matrix for each state, which is typically quite large, a PCA decomposition of each observation was used before the HMM. This also naturally allows the HMM to focus on slower frequencies in the data.
+In summary, the model estimates a cross-covariance matrix for each state, not a single cov. matrix. This allows to capture spectral information within the time-window. The window size however is shown (also with a synthetic-data example in Supplementary) not to limit the frequency components captured i.e. frequencies with full cycle longer than the window size can still be modeled.
 
 Additional preprocessing: they use source-space data, so must use an appropriate signal-leakage reduction step (from "A symmetric multivariate leakage correction for MEG connectomes"), which eliminates zero-lag on the whole time-series level, but not necessarily on the level of smaller windows.
 For correcting dipole sign ambiguity they use a similar approach as previous Vidaurre paper, of finding the sign which is most coherent with the data.
@@ -124,7 +142,7 @@ Large-scale networks in resting-state MEGs can be well described by repeated vis
 2 high coherence, high power states are identified and are hypothesized to be a decomposition of the default mode network (DMN). One is frontal one is posterior, and they occur in different frequency bands. Discussion is very much based on Neuro. Further short discussion about EEG micro-states framework (which is however only based on power, and disregards phase).
 
 Comments:
-Obviously using lags on the raw time-series means this is equivalent to a sliding window method. However, this seems to be an inherent fact of life if one wants to estimate spectral content from raw time-series.
+Obviously using lags on the raw time-series means this is equivalent to a sliding window method. The tradeoffs in choosing different lags and different number of PCs (more principal components tend to focus more on higher frequencies) is shortly discussed in the Methods.
 
 
 ## Application of GNNs to EEGs:
@@ -206,6 +224,23 @@ Evaluation:
 Simulated sleep data. Time-series generated using different spectral characteristics for each discrete state. The states all have different oscillatory components at different frequencies (data generated using a "oscillation components time series decomposition method").
 Sleep data. Single channel used. Overall good evaluation, shows different states, good classification accuracy (Spearman rank is used as a metric), existence of different sub-states within major states.
 Since a single channel is used (is this fundamental limitation, or a complexity limitation due to use of MCMC for inference?), there is no analysis concerning brain regions - functional connectivity.
+
+
+### [Assessing dynamic brain graphs of time-varying connectivity in fMRI data: Application to healthy controls and patients with schizophrenia][https://doi.org/10.1016/j.neuroimage.2014.12.020]
+
+Classic sliding window analysis of dynamic brain connectivity in fMRI. Lots of random abbreviations:
+ - ICN: intrinsic connectivity networks
+ - SZ: schizophrenia
+ - HC: healty control
+ - ICA: independent componenta analysis (here used in its group version across subjects)
+
+Framework combines spatial ICA (to define the ROIs by decomposing imaging data into homogeneous brain regions, we're not interested in this), sliding time-window correlation analysis (used to estimate time-varying connectivity), graph theory based analysis (used to evaluate dynamic graph metrics).
+Simple Pearson correlation within a time-window is used for estimating FC, with some additional analysis to gauge strength of connections, differences between groups, etc.
+The absence of the frequency component from this analysis is common for fMRI studies where time-resolution is so low.
+
+
+
+
 
 
 
