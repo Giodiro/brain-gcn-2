@@ -10,6 +10,16 @@ from sklearn.preprocessing import StandardScaler
 from cache import LRUCache
 from util import time_str
 
+__all__ = [
+    "ALL_SUBJECTS",
+    "ALL_PHASES",
+    "CLASS_NAMES",
+    "EEGDataset1",
+    "EEGDataset2",
+    "SyntheticDataset",
+    "collate_tensors",
+]
+
 
 ALL_SUBJECTS = ['S01', 'S03', 'S04',
                 'S05', 'S06', 'S07',
@@ -28,178 +38,127 @@ ALL_PHASES = OrderedDict([
 CLASS_NAMES = list(ALL_PHASES.keys())
 
 
-class EEG_Dataset1(Dataset):
+class EEGDataset1(Dataset):
     """PyTorch dataloader for the imaginary coherence dataloader (dataset 1).
     """
 
     all_transformations = ["one", "std"]
 
-    def __init__(self, data_folder, subject_list=ALL_SUBJECTS, transformation="std", super_node=False):
+
+    def __init__(self, data_folder, file_indices, subj_data, transformation="none", super_node=False):
+        """
+        Args:
+          data_folder : str
+            The root folder of the preprocessed data.
+          file_indices : Dict[int->int]
+            Converts linear indices useful to iterate through the dataset
+            into keys for the `subj_data` structure.
+          subj_data : dict
+            Information about the file location of each sample
+        """
+        super(EEGDataset1, self).__init__()
         if transformation not in all_transformations:
             raise ValueError(f"Transformation must be in {all_transformations}.")
-        if len(subject_list) == 0:
-            raise ValueError(f"Must specify at least one subject.")
 
         self.super_node = super_node
+        self.transformation = transformation
+        self.data_folder = data_folder
         self.num_nodes = 90
 
-        self.X, self.Y = self.prepare_X(data_folder, subject_list)
-        self.X = self.X.astype(np.float32)
-        self.Y = self.Y.astype(np.int)
+        self.xfile_cache = LRUCache(capacity=50)
+        self.yfile_cache = LRUCache(capacity=500)
+        self.subj_data = subj_data
+        self.file_indices = file_indices
 
-        # Transform data by aggregating the 50 frequencies
-        if transformation == "std":
-            self.X = transform_X_std(self.X)
-        elif transformation == "one":
-            self.X = transform_X_one(self.X)
+    def get_xy_files(self, idx):
+        idx = self.file_indices[idx]
+        sdata = self.subj_data[idx]
+        x_file = os.path.join(self.data_folder, "X", sdata["file"])
+        y_file = os.path.join(self.data_folder, "Y", sdata["file"])
+        iif = sdata["index_in_file"]
+
+        return x_file, y_file, iif
 
     def __getitem__(self, idx):
-        sample = {}
+        x_file, y_file, iif = self.get_xy_files(idx)
 
-        for band in range(self.num_bands):
-            Ai = build_onegraph_A(self.X[idx, :, band],
-                                  num_nodes=self.num_nodes,
-                                  super_node=self.super_node)
-            sample[f"A{band}"] = torch.from_numpy(Ai.astype(np.float32))
+        X = self.xfile_cache.load(x_file, iif) # [4095, 50]
+        X = self.transform(X) # [num_freq, 90, 90]
+        Y = self.yfile_cache.load(y_file, iif)
 
-        sample["Y"] = torch.tensor(self.Y[idx], dtype=torch.long)
-
+        sample = {
+            "X": torch.tensor(X, dtype=torch.float32),
+            "Y": torch.tensor(Y, dtype=torch.long),
+        }
         return sample
 
+    def transform(self, X):
+        """
+        Args:
+         X : numpy array [4095, 50]
+        Returns:
+         X_transformed : numpy array [num_freq, 90, 90]
+        """
+        if self.transformation == "std":
+            X_delta = np.mean(X[:, 0:4],   axis=-1)  # 1 to <4 Hz
+            X_theta = np.mean(X[:, 4:8],   axis=-1)  # 4 to <8 Hz
+            X_alpha = np.mean(X[:, 8:13],  axis=-1)  # 8 - <13 Hz
+            X_beta  = np.mean(X[:, 13:30], axis=-1)  # 13 - <30 Hz
+            X_gamma = np.mean(X[:, 30:],   axis=-1)  # >=30 Hz
+            X_aggregated = np.stack(
+                (X_delta, X_theta, X_alpha, X_beta, X_gamma),
+                axis=1)
+        elif self.transformation == "one":
+            X_aggregated = np.mean(X, axis=-1).expand_dims(1)
+
+        As = []
+        for band in range(X.shape[1]):
+            A = self.adj_from_tril(X_aggregated[:,band],
+                                   num_nodes=self.num_nodes,
+                                   super_node=self.super_node) # 90 x 90
+            As.append(A)
+        A = np.stack(As, axis=0).astype(np.float32) # num_freq x 90 x 90
+        return A
+
     def __len__(self):
-        return len(self.Y)
+        return len(self.file_indices)
 
     @property
     def num_bands(self):
-        return self.X.shape[2]
+        if self.transformation == "std":
+            return 5
+        elif self.transformation == "one":
+            return 1
 
-    @staticmethod
-    def collate(tensors):
-        batch = {}
-
-        keys = list(tensors[0].keys())
-        for k in keys:
-            collate_v = torch.stack([t[k] for t in tensors], 0)
-            batch[k] = collate_v
-
-        return batch
-
-    def prepare_X(self, data_folder, subject_list):
-        """ Loads and merges the original MatLab files
-            in one single numpy array of shape [nobs, 4095, 50].
+    def adj_from_tril(self, one_coh_arr):
+        """ builds the A hat matrix of the paper for one sample.
+        https://github.com/brainstorm-tools/brainstorm3/blob/master/toolbox/process/functions/process_compress_sym.m shows that
+        the flat matrix contains the lower triangular values of the initial symmetric matrix.
 
         Args:
-            subject_list: the list of subjects to load.
-                          Defaults to all subjects.
+          one_coh_arr : array [num_nodes*(num_nodes+1)/2]
+          super_node : bool (default False)
 
         Returns:
-            X: feature matrix of shape [nobs, 4095, 50]
-            Y: label array of shape [nobs]
+          A : array [num_nodes, num_nodes]
         """
-        X = []; Y = []
-        i = 0
-        t1 = time.time()
-        for subj in os.listdir(data_folder):
-            path_subj = os.path.join(data_folder, subj)
-            if subj not in subject_list:
-                continue
-            if not os.path.isdir(path_subj):
-                continue
-            print(f"Loading subject {subj}...")
-            for phase in os.listdir(path_subj):
-                path_phase = os.path.join(path_subj, phase)
-                if not os.path.isdir(path_phase):
-                    continue
-                if phase not in ALL_PHASES:
-                    continue
-                for file in os.listdir(path_phase):
-                    if re.search(r'average', file) is not None:
-                        continue
-                    path_file = os.path.join(path_phase, file)
-                    """
-                    Other potentially interesting keys in the Matlab files:
-                    RowNames: names of the 90 regions in the atlas;
-                    Freqs: frequencies in Hz for each input matrix;
-                    """
-                    mat_data = sio.loadmat(path_file)['TF']
-                    np_data = np.asarray(mat_data).reshape(4095, 50)
-                    X.append(np_data)
-                    Y.append(ALL_PHASES[phase])
-                    i += 1
-        t2 = time.time()
-        X = np.asarray(X)
-        Y = np.asarray(Y)
-        print(f"Loaded {i} observations of shape {X.shape} in {t2 - t1:.2f}s.")
-
-        return (X, Y)
-
-    def transform_X_std(X):
-        """ Standard frequency band aggregation.
-
-        Transforms the original feature matrix by aggregating
-        the values per standard frequency band i.e. 'std' matrix of the report.
-
-        Args:
-            X: original feature matrix built with prepare_X
-
-        Returns:
-            X_aggregated: aggregated matrix [nobs, 4095, 5]
-        """
-        X_delta = np.mean(X[:, :, 0:4],   axis=2)  # 1 to <4 Hz
-        X_theta = np.mean(X[:, :, 4:8],   axis=2)  # 4 to <8 Hz
-        X_alpha = np.mean(X[:, :, 8:13],  axis=2)  # 8 - <13 Hz
-        X_beta  = np.mean(X[:, :, 13:30], axis=2)  # 13 - <30 Hz
-        X_gamma = np.mean(X[:, :, 30:],   axis=2)  # >=30 Hz
-        X_aggregated = np.stack(
-            (X_delta, X_theta, X_alpha, X_beta, X_gamma),
-            axis=2)
-        return X_aggregated
-
-    def transform_X_one(X):
-        """Single frequency band aggregation.
-
-        Transforms the original feature matrix by averaging
-        the values over all frequency bands i.e. 'one' matrix of the report.
-
-        Args:
-            X: original feature matrix built with prepare_X
-
-        Returns:
-            X_one: aggregated matrix [nobs, 4095, 1]
-        """
-        X_one = np.mean(X[:, :, :], axis=2).expand_dims(2)
-        return X_one
-
-
-def build_onegraph_A(one_coh_arr, num_nodes, super_node=False):
-    """ builds the A hat matrix of the paper for one sample.
-    https://github.com/brainstorm-tools/brainstorm3/blob/master/toolbox/process/functions/process_compress_sym.m shows that
-    the flat matrix contains the lower triangular values of the initial symmetric matrix.
-
-    Args:
-      one_coh_arr : array [num_nodes*(num_nodes+1)/2]
-      super_node : bool (default False)
-
-    Returns:
-      A : array [num_nodes, num_nodes]
-    """
-    # First construct weighted adjacency matrix
-    A = np.zeros((num_nodes,num_nodes))
-    index = np.tril_indices(num_nodes)
-    A[index] = one_coh_arr
-    A = (A + A.T)
-    if super_node:
-        A = np.concatenate((A, np.ones((num_nodes, 1))), axis = 1) # adding the super node
-        A = np.concatenate((A, np.ones((1, num_nodes+1))), axis = 0)
-    # A tilde from the paper
-    di = np.diag_indices(num_nodes)
-    A[di] = A[di]/2
-    A_tilde = A + np.eye(num_nodes)
-    # D tilde power -0.5
-    D_tilde_inv = np.diag(np.power(np.sum(A_tilde, axis=0), -0.5))
-    # Finally build A_hat
-    A_hat = np.matmul(D_tilde_inv, np.matmul(A_tilde, D_tilde_inv))
-    return A_hat
+        # First construct weighted adjacency matrix
+        A = np.zeros((self.num_nodes,self.num_nodes))
+        index = np.tril_indices(self.num_nodes)
+        A[index] = one_coh_arr
+        A = (A + A.T)
+        if self.super_node:
+            A = np.concatenate((A, np.ones((self.num_nodes, 1))), axis = 1) # adding the super node
+            A = np.concatenate((A, np.ones((1, self.num_nodes+1))), axis = 0)
+        # A tilde from the paper
+        di = np.diag_indices(self.num_nodes)
+        A[di] = A[di]/2
+        A_tilde = A + np.eye(self.num_nodes)
+        # D tilde power -0.5
+        D_tilde_inv = np.diag(np.power(np.sum(A_tilde, axis=0), -0.5))
+        # Finally build A_hat
+        A_hat = np.matmul(D_tilde_inv, np.matmul(A_tilde, D_tilde_inv))
+        return A_hat
 
 
 
@@ -222,7 +181,7 @@ class EEGDataset2(Dataset):
     all_normalizations = ["standard",     # Standardize each ROI
                           "none",         # Multiply all values by NORM_CONSTANT
                           "val",          # Indicates that this is a validation loader so normalization is loaded from the tr loader
-                          ]
+                         ]
 
     NORM_CONSTANT = 1.0e10
 
@@ -280,17 +239,6 @@ class EEGDataset2(Dataset):
 
     def __len__(self):
         return len(self.file_indices)
-
-    @staticmethod
-    def collate(tensors):
-        batch = {}
-
-        keys = list(tensors[0].keys())
-        for k in keys:
-            collate_v = torch.stack([t[k] for t in tensors], 0)
-            batch[k] = collate_v
-
-        return batch
 
     def init_normalizer(self):
         if self.normalization == "val":
@@ -394,13 +342,13 @@ class SyntheticDataset(Dataset):
     def __len__(self):
         return len(self.samples)
 
-    @staticmethod
-    def collate(tensors):
-        batch = {}
 
-        keys = list(tensors[0].keys())
-        for k in keys:
-            collate_v = torch.stack([t[k] for t in tensors], 0)
-            batch[k] = collate_v
+def collate_tensors(tensors):
+    batch = {}
 
-        return batch
+    keys = list(tensors[0].keys())
+    for k in keys:
+        collate_v = torch.stack([t[k] for t in tensors], 0)
+        batch[k] = collate_v
+
+    return batch

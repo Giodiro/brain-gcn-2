@@ -29,6 +29,95 @@ def split_within_subj(subject_list, subj_data, seed=1922318, test_size=0.1):
     return keys_train, keys_test
 
 
+def prepare_coherence_data(data_folder, out_folder, save_batch_size):
+    """ Loads and merges the original MatLab files
+        in one single numpy array of shape [nobs, 4095, 50].
+
+    Args:
+        subject_list: the list of subjects to load.
+                      Defaults to all subjects.
+
+    Returns:
+        X: feature matrix of shape [nobs, 4095, 50]
+        Y: label array of shape [nobs]
+    """
+    y_folder = os.path.join(out_folder, "Y")
+    x_folder = os.path.join(out_folder, "X")
+    mkdir_p(y_folder)
+    mkdir_p(x_folder)
+    print(f"{time_str()} Created output folders {x_folder} and {y_folder}.")
+
+    t1 = time.time()
+    X = []; Y = []
+    i = 0; save_i = 0
+    subj_data = {}
+
+
+    for subj in os.listdir(data_folder):
+        path_subj = os.path.join(data_folder, subj)
+        if subj not in ["S04", "S05", "S06", "S07", "S08", "S10", "S11", "S12"]:
+            continue
+        if not os.path.isdir(path_subj):
+            continue
+        print(f"Loading subject {subj}...")
+        for phase in os.listdir(path_subj):
+            path_phase = os.path.join(path_subj, phase)
+            if phase not in ALL_PHASES:
+                continue
+            if not os.path.isdir(path_phase):
+                continue
+            for file in os.listdir(path_phase):
+                if re.search(r'average', file) is not None:
+                    continue
+                path_file = os.path.join(path_phase, file)
+
+                """
+                Other potentially interesting keys in the Matlab files:
+                RowNames: names of the 90 regions in the atlas;
+                Freqs: frequencies in Hz for each input matrix;
+                """
+                mat_data = sio.loadmat(path_file)['TF']
+                np_data = np.asarray(mat_data).reshape(4095, 50)
+                X.append(np_data)
+                Y.append(ALL_PHASES[phase])
+                subj_data[i] = {"subj": subj, "phase": ALL_PHASES[phase]}
+                i += len(np_data)
+
+                while len(X) >= save_batch_size:
+                    save_fname = f"{subj}_{save_i}.npy"
+                    for j, k in enumerate(range(save_i * save_batch_size, (save_i + 1) * save_batch_size)):
+                        subj_data[k]["file"] = save_fname
+                        subj_data[k]["index_in_file"] = j
+                    np.save(os.path.join(x_folder, save_fname), X[:save_batch_size])
+                    np.save(os.path.join(y_folder, save_fname), Y[:save_batch_size])
+
+                    X = X[save_batch_size:]
+                    Y = Y[save_batch_size:]
+                    save_i += 1
+
+    # Final save. Only the last file can be smaller than the rest, to make
+    # reading data back easier.
+    if len(X) >= 0:
+        save_fname = f"{subj}_{save_i}.npy"
+        for j, k in enumerate(range(save_i * save_batch_size,
+                                    save_i * save_batch_size + len(X))):
+            subj_data[k]["file"] = save_fname
+            subj_data[k]["index_in_file"] = j
+        np.save(os.path.join(x_folder, save_fname), X[:save_batch_size])
+        np.save(os.path.join(y_folder, save_fname), Y[:save_batch_size])
+        save_i += 1
+
+    # Save metadata
+    metadata_file = os.path.join(base_folder, "subj_data.json")
+    with open(metadata_file, "w") as fh:
+        json.dump(subj_data, fh)
+    print(f"{time_str()} Saved subject metadata at {metadata_file}.")
+
+    t2 = time.time()
+    print(f"{time_str()} Loaded {i} observations batched into {save_i} files "
+          f"in {t2 - t1:.2f}s.")
+
+
 def prepare_timeseries_data(data_folder, subsample, sample_size, out_folder, save_batch_size):
     """Run preprocessing on dataset2 (timeseries data)
 

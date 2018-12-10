@@ -240,7 +240,7 @@ def get_encoder(
 def get_decoder(
     decoder_type, num_atoms, num_timesteps, n_edge_types, num_clusters, decoder_dropout,
     decoder_hidden_gnn, decoder_hidden_mlp, decoder_output_gnn=None, decoder_pred_steps=None,
-    decoder_use_graph=None, classifier_dropout=None):
+    decoder_use_graph=None, classifier_dropout=None, classifier_hidden_dims=None):
 
     if decoder_type == "reconstruction":
         decoder = MLPReconstructionDecoder(
