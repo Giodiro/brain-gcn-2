@@ -4,6 +4,12 @@
 
 
 class Granger(nn.Module):
+    """LSTM Encoder + Decoder for pairwise node relationships.
+    The bottleneck layer is stochastic with two different variables:
+     1. A multivariate Gaussian variable (standard Gaussian prior)
+     2. An exponential variable (prior rate `lambda_prior`)
+    The loss is a mixed loss to try and
+    """
     def __init__(
         self,
         num_nodes,
@@ -32,6 +38,7 @@ class Granger(nn.Module):
 
         self.lstm_burnin = lstm_burnin
         self.theta = theta
+        self.lambda_prior = 10
 
         # The pairwise relationship indices.
         pairwise = np.ones((num_nodes, num_nodes)) - np.diag(np.ones(num_nodes))
@@ -108,17 +115,17 @@ class Granger(nn.Module):
         h_n = h_n.transpose(0, 1).view(batch_size*num_relations, -1) # B*E, num_layers*num_directions*enc_hidden
 
         ## 3.a) Parametrize & Sample from latent distribution (G_HOW)
-        edge_mu = self.mu_layer(h_n) # B*E, Z
-        edge_lv = self.lv_layer(h_n) # B*E, Z
+        self.edge_mu = self.mu_layer(h_n) # B*E, Z
+        self.edge_lv = self.lv_layer(h_n) # B*E, Z
 
-        eps = torch.randn_like(edge_mu)
-        edge_sample = edge_mu + torch.exp(edge_lv.mul(0.5)) * eps # B*E, Z
+        eps = torch.randn_like(self.edge_mu)
+        edge_sample = self.edge_mu + torch.exp(self.edge_lv.mul(0.5)) * eps # B*E, Z
         edge_sample = edge_sample.view(batch_size, num_relations, -1) # B, E, Z
 
         ## 3.b) Parametrize & Sample from latent distribution (G_HOW_MUCH)
-        how_much_lamda = self.lambda_layer(h_n) # B*E, 1
-        eps = torch.randn_like(how_much_lamda) + 1e-10
-        how_much_sample = -torch.log(eps) / how_much_lamda # B*E, 1
+        self.how_much_lambda = self.lambda_layer(h_n) # B*E, 1
+        eps = torch.randn_like(self.how_much_lambda) + 1e-10
+        how_much_sample = -torch.log(eps) / self.how_much_lambda # B*E, 1
         # Sigmoid to make sure it's between 0 and 1.
         how_much_sample = F.sigmoid(how_much_sample)
         how_much_sample = how_much_sample.view(batch_size, num_relations, -1).squeeze(2) # B, E
@@ -160,19 +167,31 @@ class Granger(nn.Module):
         Returns:
          - mean_loss : scalar
         """
+        batch_size = relation_prediction.shape(0)
 
         # Here we aggregate by the `pairwise_col` variable which is the destination
         # node.
         true_timeseries = true_timeseries.transpose(1, 2) # B, N, T
         true_timeseries = true_timeseries[:,self.pairwise_col,:self.lstm_burnin] # B, E, Tr
 
-        loss = (true_timeseries -
+        rec_loss = (true_timeseries -
                 (how_much_sample * true_timeseries + (1 - how_much_sample) * relation_prediction))
-        loss = torch.mean(loss, 2) # B, E
+        rec_loss = torch.mean(rec_loss, dim=2) # B, E
         regularizer = self.theta * how_much_sample # B, E
 
-        reg_loss = loss + regularizer
+        # Gaussian KL divergence:
+        gauss_KL = 0.5 * torch.sum(torch.exp(self.edge_lv) +
+                                   self.edge_mu * self.edge_mu -
+                                   1 - self.edge_lv, dim=1)
+        gauss_KL = gauss_KL.view(batch_size, -1) # B, E
 
+        # Exponential KL divergence:
+        exp_KL = (log(self.lambda_prior) - torch.log(self.how_much_lambda) +
+                  self.how_much_lambda / self.lambda_prior - 1)
+        exp_KL = exp_KL.view(batch_size, -1) # B, E
+
+        # Sum and take the mean over every relationship.
+        total_loss = rec_loss + regularizer + gauss_KL + exp_KL
         mean_loss = torch.mean(reg_loss)
         return mean_loss
 
